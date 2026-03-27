@@ -1,0 +1,8 @@
+{
+  "extName": {
+    "message": "Bilingual Text Viewer"
+  },
+  "extDescription": {
+    "message": "Show original-language text after page translation when you click or select translated content."
+  }
+}

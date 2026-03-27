@@ -1,0 +1,22 @@
+#bilingual-tooltip {
+  position: fixed;
+  background-color: #333333;
+  color: #ffffff;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 14px;
+  line-height: 1.5;
+  z-index: 2147483647; /* 保证在最顶层 */
+  pointer-events: none; /* 防止遮挡鼠标事件 */
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  max-width: 400px;
+  word-wrap: break-word;
+  display: none;
+  font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+}
+
+#bilingual-tooltip::before {
+  content: attr(data-original-text);
+  display: block;
+  white-space: pre-wrap;
+}

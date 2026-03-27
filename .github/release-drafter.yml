@@ -1,0 +1,60 @@
+name-template: "v$RESOLVED_VERSION"
+tag-template: "v$RESOLVED_VERSION"
+template: |
+  ## Highlights
+  $CHANGES
+
+  ## Added
+  - 
+
+  ## Changed
+  - 
+
+  ## Fixed
+  - 
+
+  ## Security
+  - No security changes in this release.
+
+  ## Checksums
+  SHA256 (bilingual-text-viewer-v$RESOLVED_VERSION.zip) = <fill-me>
+
+  ## Contributors
+  $CONTRIBUTORS
+
+categories:
+  - title: "🚀 Features"
+    labels:
+      - feature
+      - enhancement
+  - title: "🐛 Fixes"
+    labels:
+      - bug
+      - fix
+  - title: "🧰 Maintenance"
+    labels:
+      - chore
+      - refactor
+      - docs
+
+change-template: "- $TITLE (#$NUMBER)"
+change-title-escapes: "\\<*_&"
+
+version-resolver:
+  major:
+    labels:
+      - major
+  minor:
+    labels:
+      - feature
+      - enhancement
+  patch:
+    labels:
+      - bug
+      - fix
+      - chore
+      - docs
+  default: patch
+
+exclude-labels:
+  - skip-changelog
