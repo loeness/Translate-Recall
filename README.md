@@ -1,11 +1,14 @@
-# Bilingual Text Viewer
+# Webpage Translation Assistant
 
 一个用于 Edge 的 MV3 扩展：在页面翻译后，点击或划词即可查看对应原语言文本。
 
 ## 演示动图
 
 
-![Demo GIF Placeholder](assets/demo/demo.gif)
+![Switch Demo GIF](assets/demo/switch_demo.gif)
+
+![Click Demo GIF](assets/demo/click_demo.gif)
+
 
 ## 功能
 
