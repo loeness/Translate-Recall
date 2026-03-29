@@ -11,6 +11,12 @@ const PREFERRED_SPLIT_CHARS = new Set([',', '，', ';', '；', ':', '：', '、'
 const ABBREVIATION_TOKENS = new Set([
     'e.g.', 'i.e.', 'mr.', 'mrs.', 'ms.', 'dr.', 'prof.', 'sr.', 'jr.', 'vs.', 'etc.'
 ]);
+const INTERACTIVE_TAGS = new Set([
+    'BUTTON', 'INPUT', 'TEXTAREA', 'SELECT', 'OPTION', 'LABEL', 'SUMMARY', 'DETAILS'
+]);
+const INTERACTIVE_ROLES = new Set([
+    'button', 'menuitem', 'tab', 'switch', 'checkbox', 'radio', 'option', 'combobox', 'slider'
+]);
 
 const FEATURE_ENABLED_STORAGE_KEY = 'btvFeatureEnabled';
 const CLICK_TEXT_HIT_PADDING = 2;
@@ -56,11 +62,58 @@ function ensureTooltip() {
     return tooltip;
 }
 
+function hasInteractiveRole(element) {
+    if (!(element instanceof Element)) return false;
+
+    const roleAttr = element.getAttribute('role');
+    if (!roleAttr) return false;
+
+    return roleAttr
+        .toLowerCase()
+        .split(/\s+/)
+        .some((role) => INTERACTIVE_ROLES.has(role));
+}
+
+function isInteractiveElement(element) {
+    if (!(element instanceof Element)) return false;
+
+    if (INTERACTIVE_TAGS.has(element.tagName)) return true;
+    if (hasInteractiveRole(element)) return true;
+
+    const contentEditable = element.getAttribute('contenteditable');
+    return contentEditable && contentEditable.toLowerCase() !== 'false';
+}
+
+function isHiddenElement(element) {
+    if (!(element instanceof Element)) return false;
+
+    if (element.closest('[hidden], [aria-hidden="true"]')) {
+        return true;
+    }
+
+    const style = window.getComputedStyle(element);
+    return style.display === 'none' || style.visibility === 'hidden';
+}
+
+function isInsideInteractiveContainer(element) {
+    let cursor = element;
+    while (cursor && cursor !== document.body && cursor !== document.documentElement) {
+        if (isInteractiveElement(cursor)) {
+            return true;
+        }
+        cursor = cursor.parentElement;
+    }
+
+    return false;
+}
+
 function shouldSkipTextNode(textNode) {
     const parent = textNode.parentElement;
     if (!parent) return true;
     if (SKIP_TAGS.has(parent.tagName)) return true;
     if (parent.closest('#bilingual-tooltip')) return true;
+    if (isInsideInteractiveContainer(parent)) return true;
+    if (isHiddenElement(parent)) return true;
     return false;
 }
 
@@ -581,7 +634,18 @@ function getBlockBoundaryElement(fromElement) {
 
     let cursor = fromElement;
     while (cursor) {
+        if (isInteractiveElement(cursor)) {
+            cursor = cursor.parentElement;
+            continue;
+        }
+
         if (cursor.tagName && BLOCK_BOUNDARY_TAGS.has(cursor.tagName)) {
+            return cursor;
+        }
+
+        // Custom components in chat-like UIs are often block containers without semantic tags.
+        const display = window.getComputedStyle(cursor).display;
+        if (display === 'block' || display === 'list-item' || display === 'table-cell') {
             return cursor;
         }
 
@@ -985,10 +1049,18 @@ function chooseFallbackOriginalText(snapshot, preferredIndex = -1) {
     }
 
     if (Array.isArray(originalCoarseSegments) && originalCoarseSegments.length > 0) {
-        return truncateTooltipText(originalCoarseSegments.map((segment) => segment.text).join(' '));
+        const preferred = originalCoarseSegments.find((segment) => !isShortSegment(segment.text))
+            || originalCoarseSegments[0];
+        return truncateTooltipText(preferred?.text || '');
     }
 
-    return truncateTooltipText(originalText || originalSegments.map((segment) => segment.text).join(' '));
+    if (Array.isArray(originalSegments) && originalSegments.length > 0) {
+        const preferred = originalSegments.find((segment) => !isShortSegment(segment.text))
+            || originalSegments[0];
+        return truncateTooltipText(preferred?.text || '');
+    }
+
+    return truncateTooltipText(originalText || '');
 }
 
 function getTextNodeOffsetInBlock(textNode, blockElement) {
