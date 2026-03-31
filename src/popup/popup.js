@@ -4,6 +4,21 @@ const preprocessButton = document.getElementById('preprocess-btn');
 const toggleButton = document.getElementById('toggle-feature-btn');
 const statusEl = document.getElementById('status');
 
+// Apply i18n strings to elements with a data-i18n attribute.
+document.querySelectorAll('[data-i18n]').forEach((el) => {
+  const key = el.getAttribute('data-i18n');
+  const msg = chrome.i18n.getMessage(key);
+  if (msg) el.textContent = msg;
+});
+
+// Set the page language and title via i18n.
+document.documentElement.lang = chrome.i18n.getUILanguage() || 'en';
+document.title = chrome.i18n.getMessage('extName') || 'Bilingual Text Viewer';
+
+function i18n(key, substitutions) {
+  return chrome.i18n.getMessage(key, substitutions) || key;
+}
+
 function setStatus(text, isError = false) {
   statusEl.textContent = text;
   statusEl.style.color = isError ? '#b91c1c' : '#334155';
@@ -11,10 +26,10 @@ function setStatus(text, isError = false) {
 
 function renderToggleButton(enabled) {
   if (enabled) {
-    toggleButton.textContent = '关闭原文显示';
+    toggleButton.textContent = i18n('toggleEnableBtn');
     toggleButton.classList.remove('is-disabled');
   } else {
-    toggleButton.textContent = '开启原文显示';
+    toggleButton.textContent = i18n('toggleDisableBtn');
     toggleButton.classList.add('is-disabled');
   }
 }
@@ -22,12 +37,20 @@ function renderToggleButton(enabled) {
 async function getActiveTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab || typeof tab.id !== 'number') {
-    throw new Error('无法获取当前标签页');
+    throw new Error(i18n('errorNoTab'));
   }
   return tab;
 }
 
 async function ensureContentScriptReady(tabId) {
+  // Ping the existing content script first; only inject if it does not respond.
+  try {
+    const pong = await chrome.tabs.sendMessage(tabId, { type: 'BTV_PING' });
+    if (pong && pong.ok) return;
+  } catch {
+    // Content script not yet present – fall through to injection.
+  }
+
   await chrome.scripting.insertCSS({
     target: { tabId },
     files: ['assets/styles/content.css']
@@ -70,7 +93,7 @@ async function setFeatureEnabledState(enabled) {
 
 async function triggerPreprocess() {
   preprocessButton.disabled = true;
-  setStatus('正在预处理当前页面...');
+  setStatus(i18n('statusPreprocessing'));
 
   try {
     const tab = await getActiveTab();
@@ -79,13 +102,13 @@ async function triggerPreprocess() {
     }, true);
 
     if (!response || !response.ok) {
-      throw new Error('内容脚本没有返回成功状态');
+      throw new Error(i18n('errorNoConfirm'));
     }
 
-    setStatus('预处理完成。现在可以开始翻译页面。');
+    setStatus(i18n('statusPreprocessDone'));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    setStatus(`预处理失败：${message}`, true);
+    setStatus(i18n('statusPreprocessFail', [message]), true);
   } finally {
     preprocessButton.disabled = false;
   }
@@ -114,21 +137,21 @@ async function toggleFeatureEnabled() {
       }
 
       if (!response || response.ok !== true) {
-        throw new Error('页面未确认更新功能开关状态');
+        throw new Error(i18n('errorNoConfirm'));
       }
     } catch (syncError) {
       const syncMessage = syncError instanceof Error ? syncError.message : String(syncError);
-      setStatus(`切换失败：${syncMessage}`, true);
+      setStatus(i18n('statusToggleFail', [syncMessage]), true);
       return;
     }
 
     await setFeatureEnabledState(nextEnabled);
     renderToggleButton(nextEnabled);
 
-    setStatus(nextEnabled ? '原文显示已开启。' : '原文显示已关闭。');
+    setStatus(nextEnabled ? i18n('statusToggleEnabled') : i18n('statusToggleDisabled'));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    setStatus(`切换失败：${message}`, true);
+    setStatus(i18n('statusToggleFail', [message]), true);
   } finally {
     toggleButton.disabled = false;
   }
@@ -138,10 +161,10 @@ async function initializePopup() {
   try {
     const enabled = await getFeatureEnabledState();
     renderToggleButton(enabled);
-    setStatus(enabled ? '功能已开启。' : '功能已关闭。');
+    setStatus(enabled ? i18n('statusEnabled') : i18n('statusDisabled'));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    setStatus(`初始化失败：${message}`, true);
+    setStatus(i18n('statusInitFail', [message]), true);
   }
 }
 

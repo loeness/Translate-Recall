@@ -1,3 +1,11 @@
+// Singleton guard: prevent duplicate initialization when the script is injected
+// a second time by popup.js after the manifest has already auto-injected it.
+// Throwing at the top level aborts the rest of the script execution.
+if (window.__BTV_CONTENT_INITIALIZED__) {
+    throw new Error('BTV: content script already initialized, aborting duplicate injection.');
+}
+window.__BTV_CONTENT_INITIALIZED__ = true;
+
 const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'PRE', 'TEXTAREA', 'INPUT']);
 const BLOCK_BOUNDARY_TAGS = new Set([
     'P', 'LI', 'DT', 'DD', 'TD', 'TH',
@@ -874,8 +882,12 @@ function setupNavigationObservers() {
     window.addEventListener('hashchange', maybeHandleUrlChange, true);
 }
 
+let mutationObserver = null;
+
 function setupMutationObserver() {
-    const observer = new MutationObserver((mutations) => {
+    if (mutationObserver) return;
+
+    mutationObserver = new MutationObserver((mutations) => {
         for (const mutation of mutations) {
             if (mutation.type === 'childList') {
                 mutation.addedNodes.forEach((node) => queueRootForPreprocess(node, false));
@@ -892,11 +904,18 @@ function setupMutationObserver() {
         }
     });
 
-    observer.observe(document.documentElement, {
+    mutationObserver.observe(document.documentElement, {
         childList: true,
         subtree: true,
         characterData: true
     });
+}
+
+function teardownMutationObserver() {
+    if (mutationObserver) {
+        mutationObserver.disconnect();
+        mutationObserver = null;
+    }
 }
 
 function showTooltip(text, clientX, clientY) {
@@ -1371,30 +1390,24 @@ function setFeatureEnabled(enabled) {
     featureEnabled = Boolean(enabled);
     if (!featureEnabled) {
         hideTooltip();
+        teardownMutationObserver();
+    } else {
+        setupMutationObserver();
     }
 }
 
 function synchronizeFeatureState() {
-    if (!chrome.storage || !chrome.storage.local) {
+    if (!chrome.storage || !chrome.storage.onChanged) {
         return;
     }
 
-    chrome.storage.local.get(FEATURE_ENABLED_STORAGE_KEY, (result) => {
-        if (chrome.runtime.lastError) {
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+        if (areaName !== 'local' || !changes[FEATURE_ENABLED_STORAGE_KEY]) {
             return;
         }
-        setFeatureEnabled(result[FEATURE_ENABLED_STORAGE_KEY] !== false);
+
+        setFeatureEnabled(changes[FEATURE_ENABLED_STORAGE_KEY].newValue !== false);
     });
-
-    if (chrome.storage.onChanged) {
-        chrome.storage.onChanged.addListener((changes, areaName) => {
-            if (areaName !== 'local' || !changes[FEATURE_ENABLED_STORAGE_KEY]) {
-                return;
-            }
-
-            setFeatureEnabled(changes[FEATURE_ENABLED_STORAGE_KEY].newValue !== false);
-        });
-    }
 }
 
 document.addEventListener('click', (event) => {
@@ -1446,6 +1459,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return;
     }
 
+    if (message.type === 'BTV_PING') {
+        sendResponse({ ok: true });
+        return;
+    }
+
     if (message.type === 'BTV_PREPROCESS_NOW') {
         runFullPreprocess(true);
         sendResponse({ ok: true, time: Date.now() });
@@ -1459,10 +1477,33 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 
 function initialize() {
-    runFullPreprocess(false);
-    setupMutationObserver();
+    // Only activate heavy processing on http/https pages.
+    const proto = window.location.protocol;
+    if (proto !== 'http:' && proto !== 'https:') {
+        return;
+    }
+
     setupNavigationObservers();
     synchronizeFeatureState();
+
+    // Delay heavy DOM work until the feature-enabled state is resolved from
+    // storage, so we skip it entirely when the feature is disabled.
+    if (!chrome.storage || !chrome.storage.local) {
+        setFeatureEnabled(true);
+        runFullPreprocess(false);
+        return;
+    }
+
+    chrome.storage.local.get(FEATURE_ENABLED_STORAGE_KEY, (result) => {
+        if (chrome.runtime.lastError) {
+            return;
+        }
+        const enabled = result[FEATURE_ENABLED_STORAGE_KEY] !== false;
+        setFeatureEnabled(enabled);
+        if (enabled) {
+            runFullPreprocess(false);
+        }
+    });
 }
 
 if (document.readyState === 'loading') {
