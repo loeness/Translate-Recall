@@ -4,5 +4,62 @@
   },
   "extDescription": {
     "message": "Show original-language text after page translation when you click or select translated content."
+  },
+  "popupTitle": {
+    "message": "Original Text Preprocessing"
+  },
+  "popupDescription": {
+    "message": "Click the button below first, then use the browser page translation. After translation, click or select text to show the original-language segment."
+  },
+  "preprocessBtn": {
+    "message": "Preprocess Page"
+  },
+  "toggleEnableBtn": {
+    "message": "Disable Original Text"
+  },
+  "toggleDisableBtn": {
+    "message": "Enable Original Text"
+  },
+  "statusPreprocessing": {
+    "message": "Preprocessing current page..."
+  },
+  "statusPreprocessDone": {
+    "message": "Preprocessing complete. You can now translate the page."
+  },
+  "statusPreprocessFail": {
+    "message": "Preprocessing failed: $MSG$",
+    "placeholders": {
+      "msg": { "content": "$1" }
+    }
+  },
+  "statusEnabled": {
+    "message": "Feature is enabled."
+  },
+  "statusDisabled": {
+    "message": "Feature is disabled."
+  },
+  "statusToggleEnabled": {
+    "message": "Original text display enabled."
+  },
+  "statusToggleDisabled": {
+    "message": "Original text display disabled."
+  },
+  "statusToggleFail": {
+    "message": "Toggle failed: $MSG$",
+    "placeholders": {
+      "msg": { "content": "$1" }
+    }
+  },
+  "statusInitFail": {
+    "message": "Initialization failed: $MSG$",
+    "placeholders": {
+      "msg": { "content": "$1" }
+    }
+  },
+  "errorNoTab": {
+    "message": "Unable to get the current tab."
+  },
+  "errorNoConfirm": {
+    "message": "Page did not confirm the feature toggle."
   }
 }

@@ -4,5 +4,62 @@
   },
   "extDescription": {
     "message": "页面翻译后点击或划词显示对应原语言文本。"
+  },
+  "popupTitle": {
+    "message": "原文预处理"
+  },
+  "popupDescription": {
+    "message": "先点击下面按钮，再使用 Edge 页面翻译。翻译后点击或划词会显示对应原语言句段。"
+  },
+  "preprocessBtn": {
+    "message": "手动启用预处理"
+  },
+  "toggleEnableBtn": {
+    "message": "关闭原文显示"
+  },
+  "toggleDisableBtn": {
+    "message": "开启原文显示"
+  },
+  "statusPreprocessing": {
+    "message": "正在预处理当前页面..."
+  },
+  "statusPreprocessDone": {
+    "message": "预处理完成。现在可以开始翻译页面。"
+  },
+  "statusPreprocessFail": {
+    "message": "预处理失败：$MSG$",
+    "placeholders": {
+      "msg": { "content": "$1" }
+    }
+  },
+  "statusEnabled": {
+    "message": "功能已开启。"
+  },
+  "statusDisabled": {
+    "message": "功能已关闭。"
+  },
+  "statusToggleEnabled": {
+    "message": "原文显示已开启。"
+  },
+  "statusToggleDisabled": {
+    "message": "原文显示已关闭。"
+  },
+  "statusToggleFail": {
+    "message": "切换失败：$MSG$",
+    "placeholders": {
+      "msg": { "content": "$1" }
+    }
+  },
+  "statusInitFail": {
+    "message": "初始化失败：$MSG$",
+    "placeholders": {
+      "msg": { "content": "$1" }
+    }
+  },
+  "errorNoTab": {
+    "message": "无法获取当前标签页"
+  },
+  "errorNoConfirm": {
+    "message": "页面未确认更新功能开关状态"
   }
 }

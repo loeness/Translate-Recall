@@ -1,6 +1,6 @@
 # Webpage Translation Assistant - v1.3.0
 
-一个用于 Edge 的 MV3 扩展：在页面翻译后，点击字词即可查看对应句的原语言文本。
+一个用于 Edge/Chrome 的 MV3 扩展：在页面翻译后，点击字词即可查看对应句的原语言文本。
 
 ## 演示动图
 
@@ -23,7 +23,7 @@
 ## 目录结构
 
 ```text
-Lighting-Original/
+Webpage_Translation_Assistant/
 ├── manifest.json
 ├── _locales/
 │   ├── en/messages.json
@@ -50,7 +50,7 @@ Lighting-Original/
 
 ## 本地安装
 
-1. 打开 `edge://extensions/`
+1. 打开 `edge://extensions/`（Edge）或 `chrome://extensions/`（Chrome）
 2. 开启「开发人员模式」
 3. 点击「加载解压缩的扩展」
 4. 选择本项目根目录
