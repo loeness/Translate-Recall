@@ -1,6 +1,6 @@
 # Webpage Translation Assistant - v1.3.0
 
-一个用于 Edge 的 MV3 扩展：在页面翻译后，点击字词即可查看对应句的原语言文本。
+一个用于 Edge/Chrome 的 MV3 扩展：在页面翻译后，点击字词即可查看对应句的原语言文本。
 
 ## 演示动图
 
@@ -14,7 +14,7 @@
 
 ## 功能亮点
 
-- 原生增强，零成本使用：无需配置 DeepL 或 OpenAI 等繁琐的 API 密钥，直接增强 Edge/Chrome 自带的免费翻译功能，主打一个省心省钱。
+- 原生增强，零成本使用：无需配置 DeepL 或 OpenAI 等繁琐的 API 密钥，直接增强浏览器（Edge/Chrome）自带的免费翻译功能，主打一个省心省钱。
 - 一键开关与状态持久化：弹窗新增“功能总开关”，设置会自动保存。关闭后点击/划词不再干扰阅读，设置跨页面、跨浏览器重启依然生效
 - 翻译隔离保护：通过 DOM 隔离技术，确保悬浮窗内的原文不会被浏览器翻译器“二次翻译”回中文，保证你看到的永远是原汁原味。
 - 支持跨标签语义识别，插件现在可以识别带有格式（加粗、代码等）的完整句子。
@@ -23,7 +23,7 @@
 ## 目录结构
 
 ```text
-Lighting-Original/
+Webpage Translation Assistant/
 ├── manifest.json
 ├── _locales/
 │   ├── en/messages.json
@@ -50,7 +50,7 @@ Lighting-Original/
 
 ## 本地安装
 
-1. 打开 `edge://extensions/`
+1. 打开 `edge://extensions/` 或 `chrome://extensions/`
 2. 开启「开发人员模式」
 3. 点击「加载解压缩的扩展」
 4. 选择本项目根目录
@@ -59,7 +59,7 @@ Lighting-Original/
 
 1. 打开目标网页
 2. 点击扩展图标，开启原文显示后在弹窗中执行「手动启用预处理」
-3. 使用 Edge 页面翻译功能
+3. 使用浏览器（Edge/Chrome）页面翻译功能
 4. 翻译完成后，点击或划词查看原文
 
 

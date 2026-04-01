@@ -4,5 +4,59 @@
   },
   "extDescription": {
     "message": "Show original-language text after page translation when you click or select translated content."
+  },
+  "popupTitle": {
+    "message": "Webpage Translation Assistant"
+  },
+  "popupHeading": {
+    "message": "Original Text Preprocess"
+  },
+  "popupDescription": {
+    "message": "Enable the feature first, then preprocess the current page before using browser translation."
+  },
+  "popupPreprocessButton": {
+    "message": "Run Preprocess"
+  },
+  "popupToggleEnable": {
+    "message": "Enable Original Text"
+  },
+  "popupToggleDisable": {
+    "message": "Disable Original Text"
+  },
+  "popupErrorUnsupportedPage": {
+    "message": "This page is not supported. Please open an HTTP/HTTPS page."
+  },
+  "popupErrorNoActiveTab": {
+    "message": "Unable to get the active tab."
+  },
+  "popupErrorContentScriptNotReady": {
+    "message": "Content script failed to initialize."
+  },
+  "popupErrorPreprocessNoAck": {
+    "message": "Content script did not acknowledge preprocess."
+  },
+  "popupErrorToggleNoAck": {
+    "message": "Page did not confirm feature switch update."
+  },
+  "popupStatusPreprocessRunning": {
+    "message": "Preprocessing current page..."
+  },
+  "popupStatusPreprocessDone": {
+    "message": "Preprocess complete. You can now translate the page."
+  },
+  "popupStatusPreprocessFailedPrefix": {
+    "message": "Preprocess failed: "
+  },
+  "popupStatusToggleFailedPrefix": {
+    "message": "Switch failed: "
+  },
+  "popupStatusInitFailedPrefix": {
+    "message": "Initialization failed: "
+  },
+  "popupStatusEnabled": {
+    "message": "Original text display is enabled."
+  },
+  "popupStatusDisabled": {
+    "message": "Original text display is disabled."
   }
 }

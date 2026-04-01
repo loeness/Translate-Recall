@@ -1,16 +1,16 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Bilingual Text Viewer</title>
+  <title data-i18n="popupTitle">Webpage Translation Assistant</title>
   <link rel="stylesheet" href="popup.css" />
 </head>
 <body>
-  <h1>原文预处理</h1>
-  <p>先点击下面按钮，再使用 Edge 页面翻译。翻译后点击或划词会显示对应原语言句段。</p>
-  <button id="preprocess-btn" type="button">手动启用预处理</button>
-  <button id="toggle-feature-btn" class="secondary-btn" type="button">关闭原文显示</button>
+  <h1 data-i18n="popupHeading">Original Text Preprocess</h1>
+  <p data-i18n="popupDescription">Enable the feature first, then preprocess the page before using browser translation.</p>
+  <button id="preprocess-btn" type="button" data-i18n="popupPreprocessButton">Run Preprocess</button>
+  <button id="toggle-feature-btn" class="secondary-btn" type="button" data-i18n="popupToggleDisable">Disable Original Text</button>
   <div id="status"></div>
 
   <script src="popup.js"></script>

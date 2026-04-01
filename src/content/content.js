@@ -1,3 +1,18 @@
+(() => {
+const CONTENT_RUNTIME_KEY = '__BTV_CONTENT_RUNTIME__';
+const existingRuntime = window[CONTENT_RUNTIME_KEY];
+
+if (existingRuntime && existingRuntime.initialized) {
+    existingRuntime.lastPingAt = Date.now();
+    return;
+}
+
+window[CONTENT_RUNTIME_KEY] = {
+    initialized: true,
+    startedAt: Date.now(),
+    lastPingAt: Date.now()
+};
+
 const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'PRE', 'TEXTAREA', 'INPUT']);
 const BLOCK_BOUNDARY_TAGS = new Set([
     'P', 'LI', 'DT', 'DD', 'TD', 'TH',
@@ -34,10 +49,14 @@ const sentenceSegmenter = (typeof Intl !== 'undefined' && typeof Intl.Segmenter 
     : null;
 
 let tooltip = null;
-let featureEnabled = true;
+let featureEnabled = false;
 let lastKnownUrl = window.location.href;
 let navigationPreprocessTimer = null;
 let allowSnapshotForceRefreshUntil = 0;
+let mutationObserver = null;
+let historyPatched = false;
+let originalPushState = null;
+let originalReplaceState = null;
 
 const textNodeSnapshots = new WeakMap();
 const blockSnapshots = new WeakMap();
@@ -855,27 +874,55 @@ function maybeHandleUrlChange() {
     scheduleForcedFullPreprocess(120);
 }
 
+function handleHistoryNavigation() {
+    maybeHandleUrlChange();
+}
+
 function setupNavigationObservers() {
-    const originalPushState = history.pushState;
+    if (historyPatched) return;
+
+    originalPushState = history.pushState;
+    originalReplaceState = history.replaceState;
+
     history.pushState = function patchedPushState(...args) {
         const result = originalPushState.apply(this, args);
         maybeHandleUrlChange();
         return result;
     };
 
-    const originalReplaceState = history.replaceState;
     history.replaceState = function patchedReplaceState(...args) {
         const result = originalReplaceState.apply(this, args);
         maybeHandleUrlChange();
         return result;
     };
 
-    window.addEventListener('popstate', maybeHandleUrlChange, true);
-    window.addEventListener('hashchange', maybeHandleUrlChange, true);
+    window.addEventListener('popstate', handleHistoryNavigation, true);
+    window.addEventListener('hashchange', handleHistoryNavigation, true);
+    historyPatched = true;
+}
+
+function teardownNavigationObservers() {
+    if (!historyPatched) return;
+
+    if (originalPushState) {
+        history.pushState = originalPushState;
+    }
+
+    if (originalReplaceState) {
+        history.replaceState = originalReplaceState;
+    }
+
+    window.removeEventListener('popstate', handleHistoryNavigation, true);
+    window.removeEventListener('hashchange', handleHistoryNavigation, true);
+    historyPatched = false;
+    originalPushState = null;
+    originalReplaceState = null;
 }
 
 function setupMutationObserver() {
-    const observer = new MutationObserver((mutations) => {
+    if (mutationObserver || !document.documentElement) return;
+
+    mutationObserver = new MutationObserver((mutations) => {
         for (const mutation of mutations) {
             if (mutation.type === 'childList') {
                 mutation.addedNodes.forEach((node) => queueRootForPreprocess(node, false));
@@ -892,11 +939,25 @@ function setupMutationObserver() {
         }
     });
 
-    observer.observe(document.documentElement, {
+    mutationObserver.observe(document.documentElement, {
         childList: true,
         subtree: true,
         characterData: true
     });
+}
+
+function teardownMutationObserver() {
+    if (!mutationObserver) return;
+
+    mutationObserver.disconnect();
+    mutationObserver = null;
+
+    if (flushTimer !== null) {
+        window.clearTimeout(flushTimer);
+        flushTimer = null;
+    }
+
+    pendingRoots.clear();
 }
 
 function showTooltip(text, clientX, clientY) {
@@ -1367,23 +1428,54 @@ function collectOriginalSegmentsFromSelection(selection) {
     return originals;
 }
 
-function setFeatureEnabled(enabled) {
-    featureEnabled = Boolean(enabled);
+function stopHeavyProcessing() {
+    teardownMutationObserver();
+    teardownNavigationObservers();
+
+    if (navigationPreprocessTimer !== null) {
+        window.clearTimeout(navigationPreprocessTimer);
+        navigationPreprocessTimer = null;
+    }
+
+    allowSnapshotForceRefreshUntil = 0;
+}
+
+function startHeavyProcessing(forceRefresh = false) {
+    setupMutationObserver();
+    setupNavigationObservers();
+    runFullPreprocess(forceRefresh);
+}
+
+function setFeatureEnabled(enabled, options = {}) {
+    const forceRefresh = options.forceRefresh === true;
+    const nextEnabled = Boolean(enabled);
+
+    if (featureEnabled === nextEnabled && !forceRefresh) {
+        return;
+    }
+
+    featureEnabled = nextEnabled;
     if (!featureEnabled) {
         hideTooltip();
+        stopHeavyProcessing();
+        return;
     }
+
+    startHeavyProcessing(forceRefresh);
 }
 
 function synchronizeFeatureState() {
     if (!chrome.storage || !chrome.storage.local) {
+        setFeatureEnabled(false);
         return;
     }
 
     chrome.storage.local.get(FEATURE_ENABLED_STORAGE_KEY, (result) => {
         if (chrome.runtime.lastError) {
+            setFeatureEnabled(false);
             return;
         }
-        setFeatureEnabled(result[FEATURE_ENABLED_STORAGE_KEY] !== false);
+        setFeatureEnabled(result[FEATURE_ENABLED_STORAGE_KEY] === true, { forceRefresh: true });
     });
 
     if (chrome.storage.onChanged) {
@@ -1392,7 +1484,7 @@ function synchronizeFeatureState() {
                 return;
             }
 
-            setFeatureEnabled(changes[FEATURE_ENABLED_STORAGE_KEY].newValue !== false);
+            setFeatureEnabled(changes[FEATURE_ENABLED_STORAGE_KEY].newValue === true, { forceRefresh: true });
         });
     }
 }
@@ -1446,6 +1538,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return;
     }
 
+    if (message.type === 'BTV_PING') {
+        const runtime = window[CONTENT_RUNTIME_KEY];
+        if (runtime && typeof runtime === 'object') {
+            runtime.lastPingAt = Date.now();
+        }
+
+        sendResponse({ ok: true, enabled: featureEnabled });
+        return;
+    }
+
     if (message.type === 'BTV_PREPROCESS_NOW') {
         runFullPreprocess(true);
         sendResponse({ ok: true, time: Date.now() });
@@ -1453,15 +1555,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     }
 
     if (message.type === 'BTV_SET_ENABLED') {
-        setFeatureEnabled(Boolean(message.enabled));
+        const enabled = Boolean(message.enabled);
+        setFeatureEnabled(enabled, { forceRefresh: enabled });
         sendResponse({ ok: true, enabled: featureEnabled });
     }
 });
 
 function initialize() {
-    runFullPreprocess(false);
-    setupMutationObserver();
-    setupNavigationObservers();
     synchronizeFeatureState();
 }
 
@@ -1470,3 +1570,5 @@ if (document.readyState === 'loading') {
 } else {
     initialize();
 }
+
+})();

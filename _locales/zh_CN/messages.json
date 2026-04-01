@@ -4,5 +4,59 @@
   },
   "extDescription": {
     "message": "页面翻译后点击或划词显示对应原语言文本。"
+  },
+  "popupTitle": {
+    "message": "网页翻译助手"
+  },
+  "popupHeading": {
+    "message": "原文预处理"
+  },
+  "popupDescription": {
+    "message": "先开启功能，再预处理当前页面，然后使用浏览器翻译。"
+  },
+  "popupPreprocessButton": {
+    "message": "执行预处理"
+  },
+  "popupToggleEnable": {
+    "message": "开启原文显示"
+  },
+  "popupToggleDisable": {
+    "message": "关闭原文显示"
+  },
+  "popupErrorUnsupportedPage": {
+    "message": "当前页面不受支持，请在 http/https 页面使用。"
+  },
+  "popupErrorNoActiveTab": {
+    "message": "无法获取当前标签页。"
+  },
+  "popupErrorContentScriptNotReady": {
+    "message": "内容脚本初始化失败。"
+  },
+  "popupErrorPreprocessNoAck": {
+    "message": "内容脚本未确认预处理完成。"
+  },
+  "popupErrorToggleNoAck": {
+    "message": "页面未确认开关状态更新。"
+  },
+  "popupStatusPreprocessRunning": {
+    "message": "正在预处理当前页面..."
+  },
+  "popupStatusPreprocessDone": {
+    "message": "预处理完成，现在可以开始翻译页面。"
+  },
+  "popupStatusPreprocessFailedPrefix": {
+    "message": "预处理失败："
+  },
+  "popupStatusToggleFailedPrefix": {
+    "message": "切换失败："
+  },
+  "popupStatusInitFailedPrefix": {
+    "message": "初始化失败："
+  },
+  "popupStatusEnabled": {
+    "message": "原文显示已开启。"
+  },
+  "popupStatusDisabled": {
+    "message": "原文显示已关闭。"
   }
 }
