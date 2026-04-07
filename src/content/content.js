@@ -1077,6 +1077,275 @@ function isPointOnTextGlyph(textNode, offset, clientX, clientY) {
     return false;
 }
 
+function clampToUnit(value) {
+    if (!Number.isFinite(value)) return 0;
+    return Math.max(0, Math.min(1, value));
+}
+
+function detectScriptProfile(text) {
+    const source = text || '';
+    const cjkMatches = source.match(/[\u3400-\u9fff]/g);
+    const latinMatches = source.match(/[A-Za-z]/g);
+
+    return {
+        cjkCount: cjkMatches ? cjkMatches.length : 0,
+        latinCount: latinMatches ? latinMatches.length : 0
+    };
+}
+
+function getTerminalPunctuation(text) {
+    const normalized = (text || '').trim();
+    if (!normalized) return '';
+
+    let cursor = normalized.length - 1;
+    while (cursor >= 0) {
+        const char = normalized[cursor];
+
+        if (TRAILING_CLOSE_CHARS.has(char) || /\s/.test(char)) {
+            cursor -= 1;
+            continue;
+        }
+
+        if (STRONG_END_CHARS.has(char) || COMMA_CHARS.has(char) || char === ':' || char === '：') {
+            return char;
+        }
+
+        break;
+    }
+
+    return '';
+}
+
+function normalizeTerminalPunctuation(char) {
+    if (!char) return '';
+    if (char === '？') return '?';
+    if (char === '！') return '!';
+    if (char === '。') return '.';
+    if (char === '；') return ';';
+    if (char === '，' || char === '、') return ',';
+    if (char === '：') return ':';
+    return char;
+}
+
+function isStrongTerminalMark(mark) {
+    return mark === '.' || mark === '!' || mark === '?' || mark === ';';
+}
+
+function buildCumulativeSegmentMetrics(segments) {
+    const safeSegments = Array.isArray(segments) ? segments : [];
+    if (safeSegments.length === 0) {
+        return {
+            metrics: [],
+            totalUnits: 1
+        };
+    }
+
+    const unitLengths = safeSegments.map((segment) => {
+        const effectiveLength = getEffectiveCharLength(segment?.text || '');
+        const rawSpan = Math.max(1, (segment?.end || 0) - (segment?.start || 0));
+        return Math.max(1, effectiveLength || rawSpan);
+    });
+
+    const totalUnits = Math.max(1, unitLengths.reduce((sum, length) => sum + length, 0));
+    let cursor = 0;
+
+    const metrics = safeSegments.map((segment, index) => {
+        const startRatio = cursor / totalUnits;
+        cursor += unitLengths[index];
+        const endRatio = cursor / totalUnits;
+        const terminalPunctuation = getTerminalPunctuation(segment?.text || '');
+        const normalizedPunctuation = normalizeTerminalPunctuation(terminalPunctuation);
+
+        return {
+            index,
+            text: segment?.text || '',
+            absoluteLength: unitLengths[index],
+            startRatio,
+            endRatio,
+            centerRatio: (startRatio + endRatio) / 2,
+            spanRatio: Math.max(0.0001, endRatio - startRatio),
+            terminalPunctuation,
+            normalizedPunctuation,
+            hasStrongEnding: STRONG_END_CHARS.has(terminalPunctuation)
+        };
+    });
+
+    return {
+        metrics,
+        totalUnits
+    };
+}
+
+function findMetricIndexByCenter(metrics, centerRatio) {
+    if (!Array.isArray(metrics) || metrics.length === 0) {
+        return -1;
+    }
+
+    if (centerRatio <= metrics[0].startRatio) {
+        return 0;
+    }
+
+    const lastIndex = metrics.length - 1;
+    if (centerRatio >= metrics[lastIndex].endRatio) {
+        return lastIndex;
+    }
+
+    for (let index = 0; index < metrics.length; index += 1) {
+        const metric = metrics[index];
+        if (centerRatio >= metric.startRatio && centerRatio <= metric.endRatio) {
+            return index;
+        }
+    }
+
+    let nearestIndex = 0;
+    let nearestDistance = Infinity;
+
+    metrics.forEach((metric, index) => {
+        const distance = Math.abs(metric.centerRatio - centerRatio);
+        if (distance < nearestDistance) {
+            nearestDistance = distance;
+            nearestIndex = index;
+        }
+    });
+
+    return nearestIndex;
+}
+
+function getRangeOverlapRatio(startA, endA, startB, endB) {
+    const overlap = Math.max(0, Math.min(endA, endB) - Math.max(startA, startB));
+    if (overlap <= 0) return 0;
+
+    const minSpan = Math.max(0.0001, Math.min(endA - startA, endB - startB));
+    return clampToUnit(overlap / minSpan);
+}
+
+function getPunctuationAlignmentScore(displayPunctuation, originalPunctuation) {
+    if (!displayPunctuation && !originalPunctuation) {
+        return 0.55;
+    }
+
+    if (!displayPunctuation || !originalPunctuation) {
+        return 0.1;
+    }
+
+    if (displayPunctuation === originalPunctuation) {
+        return displayPunctuation === '?' ? 1 : 0.92;
+    }
+
+    if (isStrongTerminalMark(displayPunctuation) && isStrongTerminalMark(originalPunctuation)) {
+        return 0.35;
+    }
+
+    if (displayPunctuation === ',' && originalPunctuation === ';') {
+        return 0.2;
+    }
+
+    if (displayPunctuation === ';' && originalPunctuation === ',') {
+        return 0.2;
+    }
+
+    return 0;
+}
+
+function computeExpansionFactor(displayText, originalText, displayTotalLength, originalTotalLength) {
+    const rawFactor = originalTotalLength / Math.max(1, displayTotalLength);
+    const displayProfile = detectScriptProfile(displayText);
+    const originalProfile = detectScriptProfile(originalText);
+
+    const likelyZhToEn = displayProfile.cjkCount > (displayProfile.latinCount * 0.8)
+        && originalProfile.latinCount > (originalProfile.cjkCount * 0.8);
+
+    if (likelyZhToEn) {
+        return Math.min(4.2, Math.max(1.35, rawFactor));
+    }
+
+    return Math.min(3, Math.max(0.75, rawFactor));
+}
+
+function scoreDisplayToOriginalCandidate(displayMetric, originalMetric, options) {
+    const centerDistance = Math.abs(displayMetric.centerRatio - originalMetric.centerRatio);
+    const centerScore = 1 - Math.min(1, centerDistance * 2.4);
+
+    const startDistance = Math.abs(displayMetric.startRatio - originalMetric.startRatio);
+    const endDistance = Math.abs(displayMetric.endRatio - originalMetric.endRatio);
+    const edgeScore = 1 - Math.min(1, ((startDistance + endDistance) / 2) * 2.1);
+
+    const overlapScore = getRangeOverlapRatio(
+        displayMetric.startRatio,
+        displayMetric.endRatio,
+        originalMetric.startRatio,
+        originalMetric.endRatio
+    );
+
+    const expectedOriginalLength = Math.max(1, displayMetric.absoluteLength * options.expansionFactor);
+    const lengthDelta = Math.abs(originalMetric.absoluteLength - expectedOriginalLength);
+    let lengthScore = 1 - Math.min(
+        1,
+        lengthDelta / Math.max(expectedOriginalLength, originalMetric.absoluteLength, 1)
+    );
+
+    if (originalMetric.absoluteLength < expectedOriginalLength * 0.52) {
+        lengthScore *= 0.7;
+    }
+
+    const reverseDisplayIndex = findMetricIndexByCenter(options.displayMetrics, originalMetric.centerRatio);
+    const reverseIndexDistance = Math.abs(reverseDisplayIndex - displayMetric.index);
+    const reverseIndexScore = 1 - Math.min(1, reverseIndexDistance / 2.5);
+    const reverseCenterScore = 1 - Math.min(1, centerDistance * 2.6);
+    const reverseScore = (reverseIndexScore * 0.65) + (reverseCenterScore * 0.35);
+
+    const punctuationScore = getPunctuationAlignmentScore(
+        displayMetric.normalizedPunctuation,
+        originalMetric.normalizedPunctuation
+    );
+
+    let score = (centerScore * 0.23)
+        + (edgeScore * 0.17)
+        + (overlapScore * 0.08)
+        + (lengthScore * 0.2)
+        + (reverseScore * 0.14)
+        + (punctuationScore * 0.18)
+        + (options.countSimilarity * 0.05);
+
+    if (displayMetric.normalizedPunctuation === '?' && originalMetric.normalizedPunctuation === '?') {
+        score += 0.15;
+    } else if (
+        displayMetric.normalizedPunctuation === '?'
+        && originalMetric.normalizedPunctuation !== '?'
+    ) {
+        score -= 0.1;
+    }
+
+    return clampToUnit(score);
+}
+
+function getMergeSupportScore(previousDisplayMetric, currentDisplayMetric, originalMetric) {
+    if (!previousDisplayMetric || !currentDisplayMetric || !originalMetric) {
+        return 0;
+    }
+
+    if (previousDisplayMetric.hasStrongEnding) {
+        return 0;
+    }
+
+    if (
+        previousDisplayMetric.normalizedPunctuation === '?'
+        || previousDisplayMetric.normalizedPunctuation === '!'
+    ) {
+        return 0;
+    }
+
+    const combinedStart = previousDisplayMetric.startRatio;
+    const combinedEnd = currentDisplayMetric.endRatio;
+    const combinedCenter = (combinedStart + combinedEnd) / 2;
+    const combinedSpan = Math.max(0.0001, combinedEnd - combinedStart);
+
+    const centerScore = 1 - Math.min(1, Math.abs(combinedCenter - originalMetric.centerRatio) * 2.5);
+    const spanScore = 1 - Math.min(1, Math.abs(combinedSpan - originalMetric.spanRatio) * 2.8);
+
+    return clampToUnit((centerScore * 0.62) + (spanScore * 0.38));
+}
+
 function mapDisplaySegmentToOriginal(displaySegments, originalSegments, displayIndex, displayText, originalText) {
     if (!Array.isArray(displaySegments) || !Array.isArray(originalSegments)) {
         return { index: -1, confidence: 0 };
@@ -1093,40 +1362,130 @@ function mapDisplaySegmentToOriginal(displaySegments, originalSegments, displayI
         };
     }
 
-    const displaySegment = displaySegments[displayIndex];
-    const displayLength = Math.max(1, displayText.length);
-    const originalLength = Math.max(1, originalText.length);
-    const displayMidRatio = ((displaySegment.start + displaySegment.end) / 2) / displayLength;
-    const displaySpanRatio = (displaySegment.end - displaySegment.start) / displayLength;
     const countSimilarity = Math.min(displaySegments.length, originalSegments.length)
         / Math.max(displaySegments.length, originalSegments.length);
 
-    let bestIndex = 0;
-    let bestScore = -1;
+    const displayAnchors = buildCumulativeSegmentMetrics(displaySegments);
+    const originalAnchors = buildCumulativeSegmentMetrics(originalSegments);
 
-    for (let index = 0; index < originalSegments.length; index += 1) {
-        const originalSegment = originalSegments[index];
-        const originalMidRatio = ((originalSegment.start + originalSegment.end) / 2) / originalLength;
-        const originalSpanRatio = (originalSegment.end - originalSegment.start) / originalLength;
+    if (
+        !Array.isArray(displayAnchors.metrics)
+        || !Array.isArray(originalAnchors.metrics)
+        || displayAnchors.metrics.length === 0
+        || originalAnchors.metrics.length === 0
+    ) {
+        return { index: -1, confidence: 0 };
+    }
 
-        const positionScore = 1 - Math.min(1, Math.abs(displayMidRatio - originalMidRatio));
-        const lengthScore = 1 - Math.min(1, Math.abs(displaySpanRatio - originalSpanRatio) * 2);
-        const score = (positionScore * 0.55) + (lengthScore * 0.3) + (countSimilarity * 0.15);
+    const expansionFactor = computeExpansionFactor(
+        displayText,
+        originalText,
+        displayAnchors.totalUnits,
+        originalAnchors.totalUnits
+    );
 
-        if (score > bestScore) {
-            bestScore = score;
-            bestIndex = index;
+    const candidateScores = displayAnchors.metrics.map((displayMetric) => (
+        originalAnchors.metrics.map((originalMetric) => scoreDisplayToOriginalCandidate(
+            displayMetric,
+            originalMetric,
+            {
+                expansionFactor,
+                countSimilarity,
+                displayMetrics: displayAnchors.metrics
+            }
+        ))
+    ));
+
+    const assignedIndexes = new Array(displayAnchors.metrics.length).fill(0);
+    const assignedScores = new Array(displayAnchors.metrics.length).fill(0);
+    let previousAssignedIndex = 0;
+
+    for (let index = 0; index < displayAnchors.metrics.length; index += 1) {
+        const lowerBound = index === 0 ? 0 : previousAssignedIndex;
+        let bestIndex = lowerBound;
+        let bestAdjustedScore = -1;
+
+        for (let originalIndex = lowerBound; originalIndex < originalAnchors.metrics.length; originalIndex += 1) {
+            const baseScore = candidateScores[index][originalIndex] || 0;
+            let adjustedScore = baseScore;
+
+            if (index > 0) {
+                const jumpSize = originalIndex - previousAssignedIndex;
+                if (jumpSize > 2) {
+                    adjustedScore -= Math.min(0.12, 0.03 * (jumpSize - 2));
+                }
+            }
+
+            if (
+                displayAnchors.metrics.length > originalAnchors.metrics.length
+                && index > 0
+                && originalIndex === previousAssignedIndex
+            ) {
+                const mergeSupportScore = getMergeSupportScore(
+                    displayAnchors.metrics[index - 1],
+                    displayAnchors.metrics[index],
+                    originalAnchors.metrics[originalIndex]
+                );
+                adjustedScore += mergeSupportScore * 0.2;
+            }
+
+            if (index < displayAnchors.metrics.length - 1) {
+                const nextSameScore = candidateScores[index + 1]?.[originalIndex] || 0;
+                const nextAdvanceScore = (originalIndex + 1 < originalAnchors.metrics.length)
+                    ? (candidateScores[index + 1]?.[originalIndex + 1] || 0)
+                    : 0;
+                const lookaheadDelta = Math.max(0, nextSameScore - nextAdvanceScore);
+                const lookaheadWeight = displayAnchors.metrics.length > originalAnchors.metrics.length
+                    ? 0.24
+                    : 0.08;
+                adjustedScore += lookaheadDelta * lookaheadWeight;
+            }
+
+            if (adjustedScore > bestAdjustedScore) {
+                bestAdjustedScore = adjustedScore;
+                bestIndex = originalIndex;
+            }
+        }
+
+        assignedIndexes[index] = bestIndex;
+        assignedScores[index] = clampToUnit(bestAdjustedScore);
+        previousAssignedIndex = bestIndex;
+    }
+
+    const mappedIndex = assignedIndexes[displayIndex];
+    if (!Number.isInteger(mappedIndex) || mappedIndex < 0 || mappedIndex >= originalAnchors.metrics.length) {
+        return { index: -1, confidence: 0 };
+    }
+
+    const baseScore = candidateScores[displayIndex]?.[mappedIndex] || 0;
+    const sequenceScore = assignedScores[displayIndex] || baseScore;
+    let confidence = clampToUnit((baseScore * 0.72) + (sequenceScore * 0.28));
+
+    confidence *= 0.55 + (countSimilarity * 0.45);
+
+    const mappedOriginalMetric = originalAnchors.metrics[mappedIndex];
+    const targetDisplayMetric = displayAnchors.metrics[displayIndex];
+    if (mappedOriginalMetric && targetDisplayMetric) {
+        const centerDistance = Math.abs(targetDisplayMetric.centerRatio - mappedOriginalMetric.centerRatio);
+        if (centerDistance > 0.36) {
+            confidence *= 0.78;
+        }
+
+        if (
+            targetDisplayMetric.normalizedPunctuation === '?'
+            && mappedOriginalMetric.normalizedPunctuation !== '?'
+        ) {
+            confidence *= 0.68;
         }
     }
 
-    let confidence = Math.max(0, Math.min(1, bestScore * countSimilarity));
-    if (countSimilarity < 0.5) {
-        confidence *= 0.65;
+    if (displayAnchors.metrics.length > originalAnchors.metrics.length) {
+        confidence = Math.max(confidence, baseScore * 0.6);
     }
 
     return {
-        index: bestIndex,
-        confidence: Math.max(0, Math.min(1, confidence))
+        index: mappedIndex,
+        confidence: clampToUnit(confidence)
     };
 }
 
