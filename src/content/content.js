@@ -35,7 +35,6 @@ const INTERACTIVE_ROLES = new Set([
 
 const FEATURE_ENABLED_STORAGE_KEY = 'btvFeatureEnabled';
 const CLICK_TEXT_HIT_PADDING = 2;
-const CLICK_TEXT_MAX_DISTANCE = 8;
 const NAVIGATION_FORCE_REFRESH_WINDOW_MS = 1500;
 const MIN_SEGMENT_CHARS = 8;
 const MAX_SEGMENT_CHARS = 220;
@@ -1025,10 +1024,57 @@ function isPointNearTextRange(range, clientX, clientY) {
         && clientY <= rect.bottom + CLICK_TEXT_HIT_PADDING
     ));
 
-    if (hasDirectHit) return true;
+    return hasDirectHit;
+}
 
-    const minDistance = rects.reduce((min, rect) => Math.min(min, getDistanceToRect(clientX, clientY, rect)), Infinity);
-    return minDistance <= CLICK_TEXT_MAX_DISTANCE;
+function isPointOnTextGlyph(textNode, offset, clientX, clientY) {
+    if (!(textNode instanceof Text)) return false;
+
+    const textLength = (textNode.nodeValue || '').length;
+    if (textLength === 0) return false;
+
+    const safeOffset = Math.max(0, Math.min(offset, textLength));
+    const candidateRanges = [];
+
+    if (safeOffset > 0) {
+        candidateRanges.push({ start: safeOffset - 1, end: safeOffset });
+    }
+
+    if (safeOffset < textLength) {
+        candidateRanges.push({ start: safeOffset, end: safeOffset + 1 });
+    }
+
+    if (candidateRanges.length === 0) {
+        candidateRanges.push({ start: textLength - 1, end: textLength });
+    }
+
+    for (const candidate of candidateRanges) {
+        const range = document.createRange();
+        try {
+            range.setStart(textNode, candidate.start);
+            range.setEnd(textNode, candidate.end);
+        } catch (_error) {
+            continue;
+        }
+
+        const rects = Array.from(range.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0);
+        if (rects.length === 0) {
+            continue;
+        }
+
+        const hit = rects.some((rect) => (
+            clientX >= rect.left - CLICK_TEXT_HIT_PADDING
+            && clientX <= rect.right + CLICK_TEXT_HIT_PADDING
+            && clientY >= rect.top - CLICK_TEXT_HIT_PADDING
+            && clientY <= rect.bottom + CLICK_TEXT_HIT_PADDING
+        ));
+
+        if (hit) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 function mapDisplaySegmentToOriginal(displaySegments, originalSegments, displayIndex, displayText, originalText) {
@@ -1263,6 +1309,7 @@ function createRangeFromProjection(projection, startOffset, endOffset) {
 function getOriginalSegmentFromClick(clientX, clientY) {
     const caret = getCaretInfoFromPoint(clientX, clientY);
     if (!caret || !(caret.node instanceof Text)) return '';
+    if ((caret.node.nodeValue || '').trim().length === 0) return '';
 
     const textNodeSnapshot = textNodeSnapshots.get(caret.node);
     const boundaryElement = textNodeSnapshot?.blockElement
@@ -1280,6 +1327,10 @@ function getOriginalSegmentFromClick(clientX, clientY) {
 
     const nodeTextLength = (caret.node.nodeValue || '').length;
     const safeCaretOffset = Math.max(0, Math.min(caret.offset, nodeTextLength));
+    if (!isPointOnTextGlyph(caret.node, safeCaretOffset, clientX, clientY)) {
+        return '';
+    }
+
     const displayOffset = targetNodeRange.start + safeCaretOffset;
 
     const displaySegments = splitTextIntoSegments(projection.displayText);
