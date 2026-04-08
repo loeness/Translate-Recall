@@ -87,6 +87,12 @@ async function waitForContentScript(tabId, attempts, intervalMs) {
   return false;
 }
 
+function getBrowserContentScriptFile() {
+  return IS_EDGE_BROWSER
+    ? 'src/content/content.edge.js'
+    : 'src/content/content.chrome.js';
+}
+
 async function ensureContentScriptReady(tab) {
   const tabId = tab?.id;
   ensureSupportedTab(tab);
@@ -120,7 +126,7 @@ async function ensureContentScriptReady(tab) {
 
     await chrome.scripting.executeScript({
       target: { tabId },
-      files: ['src/content/content.js']
+      files: [getBrowserContentScriptFile()]
     });
 
     const ready = await waitForContentScript(

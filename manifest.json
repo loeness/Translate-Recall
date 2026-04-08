@@ -22,6 +22,15 @@
     "scripting",
     "storage"
   ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "src/content/content.edge.js",
+        "src/content/content.chrome.js"
+      ],
+      "matches": ["http://*/*", "https://*/*"]
+    }
+  ],
   "content_scripts": [
     {
       "matches": ["http://*/*", "https://*/*"],
