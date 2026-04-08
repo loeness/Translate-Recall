@@ -34,14 +34,25 @@ const INTERACTIVE_ROLES = new Set([
 ]);
 
 const FEATURE_ENABLED_STORAGE_KEY = 'btvFeatureEnabled';
+// Use profile-specific tuning to keep Edge fast while reducing Chrome mutation pressure.
+const browserUserAgent = navigator.userAgent || '';
+const IS_EDGE_BROWSER = /\bEdg\//.test(browserUserAgent);
+const IS_CHROME_BROWSER = !IS_EDGE_BROWSER && /\bChrome\//.test(browserUserAgent);
+const BROWSER_PROFILE = IS_EDGE_BROWSER ? 'edge' : (IS_CHROME_BROWSER ? 'chrome' : 'chromium');
 const CLICK_TEXT_HIT_PADDING = 2;
-const NAVIGATION_FORCE_REFRESH_WINDOW_MS = 1500;
+const NAVIGATION_FORCE_REFRESH_WINDOW_MS = IS_EDGE_BROWSER ? 1300 : 1800;
 const MIN_SEGMENT_CHARS = 8;
 const MAX_SEGMENT_CHARS = 220;
 const COMMA_SPLIT_TRIGGER_CHARS = 96;
 const LINE_BREAK_SPLIT_TRIGGER_CHARS = 140;
 const LOW_CONFIDENCE_THRESHOLD = 0.45;
 const MAX_FALLBACK_CHARS = 320;
+const PREPROCESS_QUEUE_FLUSH_DELAY_MS = IS_EDGE_BROWSER ? 72 : 110;
+const PREPROCESS_FLUSH_BATCH_SIZE = IS_EDGE_BROWSER ? 30 : 18;
+const PREPROCESS_CHUNK_YIELD_MS = IS_EDGE_BROWSER ? 0 : 8;
+const NAVIGATION_PREPROCESS_DELAY_MS = IS_EDGE_BROWSER ? 95 : 130;
+
+window[CONTENT_RUNTIME_KEY].browserProfile = BROWSER_PROFILE;
 
 const sentenceSegmenter = (typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function')
     ? new Intl.Segmenter(undefined, { granularity: 'sentence' })
@@ -60,7 +71,10 @@ let originalReplaceState = null;
 const textNodeSnapshots = new WeakMap();
 const blockSnapshots = new WeakMap();
 const pendingRoots = new Map();
+let blockDisplayProjectionCache = new WeakMap();
 let flushTimer = null;
+let flushTimerMode = 'none';
+let flushInProgress = false;
 
 function ensureTooltip() {
     if (tooltip && tooltip.isConnected) {
@@ -806,10 +820,13 @@ function preprocessBoundary(boundaryElement, force = false) {
     const textNodes = collectBoundaryTextNodes(boundaryElement);
     const blockSnapshot = buildBlockOriginalSnapshot(boundaryElement, textNodes);
     if (!blockSnapshot) {
+        blockSnapshots.delete(boundaryElement);
+        blockDisplayProjectionCache.delete(boundaryElement);
         return;
     }
 
     blockSnapshots.set(boundaryElement, blockSnapshot);
+    blockDisplayProjectionCache.delete(boundaryElement);
     blockSnapshot.nodeRanges.forEach((nodeRange) => {
         snapshotTextNode(nodeRange.node, blockSnapshot, nodeRange.start, nodeRange.end);
     });
@@ -837,22 +854,121 @@ function runFullPreprocess(force = false) {
     targets.forEach((target) => preprocessRoot(target, force));
 }
 
-function queueRootForPreprocess(root, force = false) {
-    if (!root) return;
+function normalizeQueuedRoot(root) {
+    if (!root) {
+        return null;
+    }
 
-    const previousForce = pendingRoots.get(root) || false;
-    pendingRoots.set(root, previousForce || force);
+    if (root instanceof Text) {
+        if (!root.isConnected) {
+            return null;
+        }
 
-    if (flushTimer !== null) return;
+        return getBlockBoundaryElement(root.parentElement);
+    }
 
-    flushTimer = window.setTimeout(() => {
-        pendingRoots.forEach((queuedForce, queuedRoot) => preprocessRoot(queuedRoot, queuedForce));
-        pendingRoots.clear();
-        flushTimer = null;
-    }, 120);
+    if (root instanceof Element) {
+        if (!root.isConnected) {
+            return null;
+        }
+
+        if (root.closest('#bilingual-tooltip')) {
+            return null;
+        }
+
+        return root;
+    }
+
+    if (root instanceof Document) {
+        return root;
+    }
+
+    return null;
 }
 
-function scheduleForcedFullPreprocess(delay = 120) {
+function clearPendingFlushTimer() {
+    if (flushTimer === null) {
+        return;
+    }
+
+    if (flushTimerMode === 'idle' && typeof window.cancelIdleCallback === 'function') {
+        window.cancelIdleCallback(flushTimer);
+    } else {
+        window.clearTimeout(flushTimer);
+    }
+
+    flushTimer = null;
+    flushTimerMode = 'none';
+}
+
+function schedulePendingRootsFlush() {
+    if (flushTimer !== null || flushInProgress) {
+        return;
+    }
+
+    if (!IS_EDGE_BROWSER && typeof window.requestIdleCallback === 'function') {
+        flushTimerMode = 'idle';
+        flushTimer = window.requestIdleCallback(
+            flushPendingRootsInBatches,
+            { timeout: PREPROCESS_QUEUE_FLUSH_DELAY_MS }
+        );
+        return;
+    }
+
+    flushTimerMode = 'timeout';
+    flushTimer = window.setTimeout(flushPendingRootsInBatches, PREPROCESS_QUEUE_FLUSH_DELAY_MS);
+}
+
+function flushPendingRootsInBatches() {
+    flushTimer = null;
+    flushTimerMode = 'none';
+
+    if (flushInProgress || pendingRoots.size === 0) {
+        return;
+    }
+
+    flushInProgress = true;
+    const queuedEntries = Array.from(pendingRoots.entries());
+    pendingRoots.clear();
+    let cursor = 0;
+
+    const runChunk = () => {
+        const end = Math.min(cursor + PREPROCESS_FLUSH_BATCH_SIZE, queuedEntries.length);
+        for (; cursor < end; cursor += 1) {
+            const [queuedRoot, queuedForce] = queuedEntries[cursor];
+            try {
+                preprocessRoot(queuedRoot, queuedForce);
+            } catch (_error) {
+                // Keep queue processing resilient when page DOM mutates mid-iteration.
+            }
+        }
+
+        if (cursor < queuedEntries.length) {
+            window.setTimeout(runChunk, PREPROCESS_CHUNK_YIELD_MS);
+            return;
+        }
+
+        flushInProgress = false;
+
+        if (pendingRoots.size > 0) {
+            schedulePendingRootsFlush();
+        }
+    };
+
+    runChunk();
+}
+
+function queueRootForPreprocess(root, force = false) {
+    const normalizedRoot = normalizeQueuedRoot(root);
+    if (!normalizedRoot) return;
+
+    const previousForce = pendingRoots.get(normalizedRoot) || false;
+    pendingRoots.set(normalizedRoot, previousForce || force);
+
+    schedulePendingRootsFlush();
+}
+
+function scheduleForcedFullPreprocess(delay = NAVIGATION_PREPROCESS_DELAY_MS) {
     allowSnapshotForceRefreshUntil = Date.now() + NAVIGATION_FORCE_REFRESH_WINDOW_MS;
 
     if (navigationPreprocessTimer !== null) {
@@ -870,7 +986,7 @@ function maybeHandleUrlChange() {
     if (currentUrl === lastKnownUrl) return;
 
     lastKnownUrl = currentUrl;
-    scheduleForcedFullPreprocess(120);
+    scheduleForcedFullPreprocess();
 }
 
 function handleHistoryNavigation() {
@@ -951,11 +1067,9 @@ function teardownMutationObserver() {
     mutationObserver.disconnect();
     mutationObserver = null;
 
-    if (flushTimer !== null) {
-        window.clearTimeout(flushTimer);
-        flushTimer = null;
-    }
+    clearPendingFlushTimer();
 
+    flushInProgress = false;
     pendingRoots.clear();
 }
 
@@ -1565,8 +1679,14 @@ function buildBlockDisplayProjection(blockSnapshot) {
         return null;
     }
 
+    const cached = blockDisplayProjectionCache.get(blockSnapshot.boundaryElement);
+    if (cached && cached.snapshotIndexedAt === blockSnapshot.indexedAt) {
+        return cached.projection;
+    }
+
     const textNodes = collectBoundaryTextNodes(blockSnapshot.boundaryElement);
     if (textNodes.length === 0) {
+        blockDisplayProjectionCache.delete(blockSnapshot.boundaryElement);
         return null;
     }
 
@@ -1590,11 +1710,20 @@ function buildBlockDisplayProjection(blockSnapshot) {
         });
     });
 
-    return {
+    const displaySegments = splitTextIntoSegments(displayText);
+    const projection = {
         displayText,
         nodeRanges,
-        totalLength: displayText.length
+        totalLength: displayText.length,
+        displaySegments
     };
+
+    blockDisplayProjectionCache.set(blockSnapshot.boundaryElement, {
+        snapshotIndexedAt: blockSnapshot.indexedAt,
+        projection
+    });
+
+    return projection;
 }
 
 function findSegmentIndexByOffset(segments, offset) {
@@ -1692,7 +1821,7 @@ function getOriginalSegmentFromClick(clientX, clientY) {
 
     const displayOffset = targetNodeRange.start + safeCaretOffset;
 
-    const displaySegments = splitTextIntoSegments(projection.displayText);
+    const displaySegments = projection.displaySegments || [];
     if (displaySegments.length === 0) return '';
 
     const displayIndex = findSegmentIndexByOffset(displaySegments, displayOffset);
@@ -1804,7 +1933,7 @@ function collectOriginalSegmentsFromSelection(selection) {
         const projection = buildBlockDisplayProjection(blockSnapshot);
         if (!projection || projection.displayText.trim().length === 0) return;
 
-        const displaySegments = splitTextIntoSegments(projection.displayText);
+        const displaySegments = projection.displaySegments || [];
         if (displaySegments.length === 0) return;
 
         displaySegments.forEach((displaySegment, index) => {
@@ -1848,6 +1977,7 @@ function stopHeavyProcessing() {
     }
 
     allowSnapshotForceRefreshUntil = 0;
+    blockDisplayProjectionCache = new WeakMap();
 }
 
 function startHeavyProcessing(forceRefresh = false) {
@@ -1954,7 +2084,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             runtime.lastPingAt = Date.now();
         }
 
-        sendResponse({ ok: true, enabled: featureEnabled });
+        sendResponse({ ok: true, enabled: featureEnabled, browser: BROWSER_PROFILE });
         return;
     }
 

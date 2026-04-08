@@ -1,4 +1,11 @@
 const FEATURE_ENABLED_STORAGE_KEY = 'btvFeatureEnabled';
+const browserUserAgent = navigator.userAgent || '';
+const IS_EDGE_BROWSER = /\bEdg\//.test(browserUserAgent);
+const PING_RETRY_INTERVAL_MS = IS_EDGE_BROWSER ? 45 : 60;
+const PING_RETRY_ATTEMPTS_BEFORE_INJECT = IS_EDGE_BROWSER ? 2 : 3;
+const PING_RETRY_ATTEMPTS_AFTER_INJECT = IS_EDGE_BROWSER ? 8 : 12;
+
+const pendingEnsureByTabId = new Map();
 
 const preprocessButton = document.getElementById('preprocess-btn');
 const toggleButton = document.getElementById('toggle-feature-btn');
@@ -62,29 +69,75 @@ async function pingContentScript(tabId) {
   }
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForContentScript(tabId, attempts, intervalMs) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (await pingContentScript(tabId)) {
+      return true;
+    }
+
+    if (attempt < attempts - 1) {
+      await sleep(intervalMs);
+    }
+  }
+
+  return false;
+}
+
 async function ensureContentScriptReady(tab) {
+  const tabId = tab?.id;
   ensureSupportedTab(tab);
 
-  if (await pingContentScript(tab.id)) {
-    return;
+  if (typeof tabId !== 'number') {
+    throw new Error(t('popupErrorNoActiveTab', 'Unable to get the active tab.'));
   }
 
-  await chrome.scripting.insertCSS({
-    target: { tabId: tab.id },
-    files: ['assets/styles/content.css']
-  });
-
-  await chrome.scripting.executeScript({
-    target: { tabId: tab.id },
-    files: ['src/content/content.js']
-  });
-
-  // Wait until content script initialized and listening.
-  await new Promise((resolve) => setTimeout(resolve, 100));
-
-  if (!(await pingContentScript(tab.id))) {
-    throw new Error(t('popupErrorContentScriptNotReady', 'Content script failed to initialize.'));
+  if (pendingEnsureByTabId.has(tabId)) {
+    return pendingEnsureByTabId.get(tabId);
   }
+
+  const ensurePromise = (async () => {
+    if (await pingContentScript(tabId)) {
+      return;
+    }
+
+    // Give content script a short warm-up window before reinjecting.
+    if (await waitForContentScript(tabId, PING_RETRY_ATTEMPTS_BEFORE_INJECT, PING_RETRY_INTERVAL_MS)) {
+      return;
+    }
+
+    try {
+      await chrome.scripting.insertCSS({
+        target: { tabId },
+        files: ['assets/styles/content.css']
+      });
+    } catch (_error) {
+      // Ignore duplicate/temporary CSS injection failures and continue script init.
+    }
+
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ['src/content/content.js']
+    });
+
+    const ready = await waitForContentScript(
+      tabId,
+      PING_RETRY_ATTEMPTS_AFTER_INJECT,
+      PING_RETRY_INTERVAL_MS
+    );
+
+    if (!ready) {
+      throw new Error(t('popupErrorContentScriptNotReady', 'Content script failed to initialize.'));
+    }
+  })().finally(() => {
+    pendingEnsureByTabId.delete(tabId);
+  });
+
+  pendingEnsureByTabId.set(tabId, ensurePromise);
+  return ensurePromise;
 }
 
 async function sendMessageWithReconnect(tab, payload, allowReconnect = true) {
@@ -100,7 +153,7 @@ async function sendMessageWithReconnect(tab, payload, allowReconnect = true) {
     }
 
     await ensureContentScriptReady(tab);
-    return chrome.tabs.sendMessage(tab.id, payload);
+    return await chrome.tabs.sendMessage(tab.id, payload);
   }
 }
 
