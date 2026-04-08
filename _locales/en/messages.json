@@ -1,12 +1,12 @@
 {
   "extName": {
-    "message": "Bilingual Text Viewer"
+    "message": "Translate Racall"
   },
   "extDescription": {
     "message": "Show original-language text after page translation when you click or select translated content."
   },
   "popupTitle": {
-    "message": "Webpage Translation Assistant"
+    "message": "Translate Racall"
   },
   "popupHeading": {
     "message": "Original Text Preprocess"

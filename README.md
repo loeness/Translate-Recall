@@ -1,4 +1,4 @@
-# Webpage Translation Assistant - v1.3.0
+# Translate Racall - v1.3.0
 
 一个用于 Edge/Chrome 的 MV3 扩展：在页面翻译后，点击字词即可查看对应句的原语言文本。
 
@@ -23,7 +23,7 @@
 ## 目录结构
 
 ```text
-Webpage Translation Assistant/
+Translate Racall/
 ├── manifest.json
 ├── _locales/
 │   ├── en/messages.json
