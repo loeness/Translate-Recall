@@ -23,7 +23,7 @@
 Provide package checksums for verifiable installation:
 
 ```text
-SHA256 (translate-racall-vX.Y.Z.zip) = <fill-me>
+SHA256 (translate-recall-vX.Y.Z.zip) = <fill-me>
 ```
 
 ## Contributors

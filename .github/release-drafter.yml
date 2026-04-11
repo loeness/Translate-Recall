@@ -17,7 +17,7 @@ template: |
   - No security changes in this release.
 
   ## Checksums
-  SHA256 (translate-racall-v$RESOLVED_VERSION.zip) = <fill-me>
+  SHA256 (translate-recall-v$RESOLVED_VERSION.zip) = <fill-me>
 
   ## Contributors
   $CONTRIBUTORS

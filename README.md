@@ -1,4 +1,4 @@
-# Translate Racall - v1.4
+# Translate Recall - v1.4
 
 一个用于 Edge/Chrome 的 MV3 扩展：在页面翻译后，点击字词即可查看对应句的原语言文本。
 
@@ -23,7 +23,7 @@
 ## 目录结构
 
 ```text
-Translate Racall/
+Translate Recall/
 ├── manifest.json
 ├── _locales/
 │   ├── en/messages.json

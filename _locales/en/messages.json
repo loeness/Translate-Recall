@@ -1,12 +1,12 @@
 {
   "extName": {
-    "message": "Translate Racall"
+    "message": "Translate Recall"
   },
   "extDescription": {
     "message": "Show original-language text after page translation when you click or select translated content."
   },
   "popupTitle": {
-    "message": "Translate Racall"
+    "message": "Translate Recall"
   },
   "popupHeading": {
     "message": "Original Text Preprocess"

@@ -34,7 +34,7 @@ loaderState.lastError = '';
 import(chrome.runtime.getURL(targetFile))
     .catch((error) => {
         loaderState.lastError = error instanceof Error ? error.message : String(error);
-        console.error('[Translate Racall] Failed to load content script profile:', targetProfile, error);
+        console.error('[Translate Recall] Failed to load content script profile:', targetProfile, error);
     })
     .finally(() => {
         loaderState.loading = false;

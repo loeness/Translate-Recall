@@ -1,12 +1,12 @@
 {
   "extName": {
-    "message": "Translate Racall"
+    "message": "Translate Recall"
   },
   "extDescription": {
     "message": "页面翻译后点击或划词显示对应原语言文本。"
   },
   "popupTitle": {
-    "message": "Translate Racall"
+    "message": "Translate Recall"
   },
   "popupHeading": {
     "message": "原文预处理"
