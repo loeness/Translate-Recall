@@ -59,6 +59,7 @@ const SHADOW_SCAN_STEP_DELAY_MS = IS_EDGE_BROWSER ? 26 : 34;
 const SHADOW_SCAN_GROWTH_THRESHOLD_PX = 72;
 const TRANSLATION_WAKE_POLL_INTERVAL_MS = IS_EDGE_BROWSER ? 980 : 1180;
 const TRANSLATION_WAKE_IDLE_TIMEOUT_MS = IS_EDGE_BROWSER ? 240 : 360;
+const VIEWPORT_PREWARM_ROOT_MARGIN = '1500px 0px';
 
 window[CONTENT_RUNTIME_KEY].browserProfile = BROWSER_PROFILE;
 
@@ -87,13 +88,18 @@ let baselineDocumentLang = '';
 
 let textNodeSnapshots = new WeakMap();
 let blockSnapshots = new WeakMap();
+let atomicOriginalTextByNode = new WeakMap();
 const pendingRoots = new Map();
 const totalOriginalContentIndex = new Map();
 const signatureToIndexKeys = new Map();
 const liveSnapshotBoundaryKeys = new Set();
 let nodeOriginalIndexKeys = new WeakMap();
 const lowPriorityBoundaries = new Map();
-const preemptiveCaptureRoots = new Set();
+const preemptiveCaptureRoots = new Map();
+let viewportPrewarmObserver = null;
+let viewportPrewarmBoundaries = new WeakSet();
+const pendingViewportPrewarmCaptures = new Set();
+let viewportPrewarmCaptureQueued = false;
 let blockDisplayProjectionCache = new WeakMap();
 let flushTimer = null;
 let flushTimerMode = 'none';
@@ -370,6 +376,12 @@ function rememberOriginalContent(node, text, metadata = {}) {
         return;
     }
 
+    const source = typeof metadata.source === 'string' ? metadata.source : '';
+    const shouldBindAtomically = source.startsWith('prewarm') || translationStateMode !== 'translated';
+    if (shouldBindAtomically && !atomicOriginalTextByNode.has(node)) {
+        atomicOriginalTextByNode.set(node, normalizedText);
+    }
+
     const key = getIndexKeyForNode(node);
     if (!key) {
         return;
@@ -409,6 +421,11 @@ function getIndexedOriginalTextFromNode(node) {
         return '';
     }
 
+    const atomicText = atomicOriginalTextByNode.get(node);
+    if (atomicText) {
+        return atomicText;
+    }
+
     const key = nodeOriginalIndexKeys.get(node) || buildNodeDomPath(node);
     if (key) {
         const record = totalOriginalContentIndex.get(key);
@@ -420,6 +437,11 @@ function getIndexedOriginalTextFromNode(node) {
     if (node instanceof Text) {
         const boundary = getBlockBoundaryElement(node.parentElement);
         if (boundary) {
+            const boundaryAtomic = atomicOriginalTextByNode.get(boundary);
+            if (boundaryAtomic) {
+                return boundaryAtomic;
+            }
+
             const boundaryKey = nodeOriginalIndexKeys.get(boundary) || buildNodeDomPath(boundary);
             const boundaryRecord = boundaryKey ? totalOriginalContentIndex.get(boundaryKey) : null;
             if (boundaryRecord && boundaryRecord.originalText) {
@@ -1107,6 +1129,106 @@ function collectBlockBoundaries(root) {
     return boundaries;
 }
 
+function observeBoundaryForViewportPrewarm(boundary) {
+    if (!viewportPrewarmObserver) {
+        return;
+    }
+
+    if (!(boundary instanceof Element) || !boundary.isConnected) {
+        return;
+    }
+
+    if (boundary.closest('#bilingual-tooltip')) {
+        return;
+    }
+
+    if (viewportPrewarmBoundaries.has(boundary)) {
+        return;
+    }
+
+    viewportPrewarmBoundaries.add(boundary);
+    viewportPrewarmObserver.observe(boundary);
+}
+
+function registerBoundariesForViewportPrewarm(boundaries) {
+    if (!(boundaries instanceof Set) || boundaries.size === 0) {
+        return;
+    }
+
+    boundaries.forEach((boundary) => observeBoundaryForViewportPrewarm(boundary));
+}
+
+function observeRootForViewportPrewarm(root) {
+    if (!viewportPrewarmObserver || !root) {
+        return;
+    }
+
+    if (typeof DocumentFragment !== 'undefined' && root instanceof DocumentFragment) {
+        root.childNodes.forEach((child) => observeRootForViewportPrewarm(child));
+        return;
+    }
+
+    let targetRoot = root;
+    if (root instanceof Text) {
+        targetRoot = getBlockBoundaryElement(root.parentElement);
+    }
+
+    if (!targetRoot) {
+        return;
+    }
+
+    const boundaries = collectBlockBoundaries(targetRoot);
+    registerBoundariesForViewportPrewarm(boundaries);
+}
+
+function flushViewportPrewarmCaptureQueue() {
+    viewportPrewarmCaptureQueued = false;
+
+    if (!featureEnabled || pendingViewportPrewarmCaptures.size === 0) {
+        pendingViewportPrewarmCaptures.clear();
+        return;
+    }
+
+    const queuedRoots = Array.from(pendingViewportPrewarmCaptures.values());
+    pendingViewportPrewarmCaptures.clear();
+
+    queuedRoots.forEach((root) => {
+        schedulePreemptiveCapture(root, 'prewarm');
+    });
+}
+
+function enqueueViewportPrewarmCapture(root) {
+    const normalizedRoot = normalizeCaptureRoot(root);
+    if (!normalizedRoot) {
+        return;
+    }
+
+    pendingViewportPrewarmCaptures.add(normalizedRoot);
+
+    if (viewportPrewarmCaptureQueued) {
+        return;
+    }
+
+    viewportPrewarmCaptureQueued = true;
+
+    if (typeof queueMicrotask === 'function') {
+        queueMicrotask(flushViewportPrewarmCaptureQueue);
+        return;
+    }
+
+    if (typeof Promise !== 'undefined' && typeof Promise.resolve === 'function') {
+        Promise.resolve().then(flushViewportPrewarmCaptureQueue);
+        return;
+    }
+
+    if (typeof window.requestAnimationFrame === 'function') {
+        window.requestAnimationFrame(flushViewportPrewarmCaptureQueue);
+        return;
+    }
+
+    window.setTimeout(flushViewportPrewarmCaptureQueue, 0);
+}
+
 function collectBoundaryTextNodes(boundaryElement) {
     const textNodes = [];
     if (!boundaryElement) return textNodes;
@@ -1337,6 +1459,7 @@ function scheduleLowPriorityBoundaryFlush() {
 
 function preprocessRoot(root, force = false) {
     const boundaries = collectBlockBoundaries(root);
+    registerBoundariesForViewportPrewarm(boundaries);
     boundaries.forEach((boundary) => preprocessBoundary(boundary, force));
 }
 
@@ -1345,6 +1468,8 @@ function preprocessRootWithPriority(root, force = false, anchorY = window.scroll
     if (boundaries.size === 0) {
         return;
     }
+
+    registerBoundariesForViewportPrewarm(boundaries);
 
     const viewportHeight = Math.max(window.innerHeight || 0, 1);
     const rangeTop = Math.max(0, anchorY - PRIORITY_SCAN_UPWARD_PX);
@@ -1565,24 +1690,34 @@ function flushPreemptiveCaptureRoots() {
         return;
     }
 
-    const queuedRoots = Array.from(preemptiveCaptureRoots.values());
+    const queuedEntries = Array.from(preemptiveCaptureRoots.entries());
     preemptiveCaptureRoots.clear();
 
-    queuedRoots.forEach((root) => {
-        captureOriginalTextNodesFromRoot(root, 'mutation-raf');
+    queuedEntries.forEach(([root, source]) => {
+        const sourceLabel = typeof source === 'string' && source.length > 0
+            ? source
+            : 'mutation';
+
+        captureOriginalTextNodesFromRoot(root, `${sourceLabel}-raf`);
         queueRootForPreprocess(root, false);
+        observeRootForViewportPrewarm(root);
     });
 }
 
-function schedulePreemptiveCapture(root) {
+function schedulePreemptiveCapture(root, source = 'mutation') {
     const normalizedRoot = normalizeCaptureRoot(root);
     if (!normalizedRoot) {
         return;
     }
 
+    const sourceLabel = typeof source === 'string' && source.length > 0
+        ? source
+        : 'mutation';
+
     // Grab text in the current task first, then consolidate on next frame.
-    captureOriginalTextNodesFromRoot(normalizedRoot, 'mutation-sync');
-    preemptiveCaptureRoots.add(normalizedRoot);
+    captureOriginalTextNodesFromRoot(normalizedRoot, `${sourceLabel}-sync`);
+    preemptiveCaptureRoots.set(normalizedRoot, sourceLabel);
+    observeRootForViewportPrewarm(normalizedRoot);
 
     if (preemptiveCaptureHandle !== null) {
         return;
@@ -1769,6 +1904,8 @@ function clearOldSnapshots(options = {}) {
 
     clearPreemptiveCaptureHandle();
     preemptiveCaptureRoots.clear();
+    pendingViewportPrewarmCaptures.clear();
+    viewportPrewarmCaptureQueued = false;
 
     clearLowPriorityScanHandle();
     lowPriorityBoundaries.clear();
@@ -1790,6 +1927,7 @@ function clearOldSnapshots(options = {}) {
     if (!preserveIndex) {
         totalOriginalContentIndex.clear();
         signatureToIndexKeys.clear();
+        atomicOriginalTextByNode = new WeakMap();
     }
 }
 
@@ -1977,6 +2115,53 @@ function setupLifecycleObserver() {
     scheduleTranslationStateEvaluation('lifecycle-init');
 }
 
+function setupViewportPrewarmObserver() {
+    if (viewportPrewarmObserver || typeof window.IntersectionObserver !== 'function') {
+        return;
+    }
+
+    viewportPrewarmBoundaries = new WeakSet();
+
+    viewportPrewarmObserver = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+            if (!entry.isIntersecting && entry.intersectionRatio <= 0) {
+                return;
+            }
+
+            const target = entry.target;
+            if (!(target instanceof Element)) {
+                return;
+            }
+
+            if (viewportPrewarmObserver) {
+                viewportPrewarmObserver.unobserve(target);
+            }
+
+            enqueueViewportPrewarmCapture(target);
+        });
+    }, {
+        root: null,
+        rootMargin: VIEWPORT_PREWARM_ROOT_MARGIN,
+        threshold: 0
+    });
+
+    const rootTarget = document.body || document.documentElement;
+    if (rootTarget) {
+        observeRootForViewportPrewarm(rootTarget);
+    }
+}
+
+function teardownViewportPrewarmObserver() {
+    if (viewportPrewarmObserver) {
+        viewportPrewarmObserver.disconnect();
+        viewportPrewarmObserver = null;
+    }
+
+    viewportPrewarmBoundaries = new WeakSet();
+    pendingViewportPrewarmCaptures.clear();
+    viewportPrewarmCaptureQueued = false;
+}
+
 function teardownLifecycleObserver() {
     if (lifecycleObserver) {
         lifecycleObserver.disconnect();
@@ -2042,6 +2227,18 @@ function maybeHandleUrlChange() {
     if (currentUrl === lastKnownUrl) return;
 
     lastKnownUrl = currentUrl;
+    atomicOriginalTextByNode = new WeakMap();
+    pendingViewportPrewarmCaptures.clear();
+    viewportPrewarmCaptureQueued = false;
+    if (viewportPrewarmObserver) {
+        viewportPrewarmObserver.disconnect();
+        viewportPrewarmBoundaries = new WeakSet();
+        const rootTarget = document.body || document.documentElement;
+        if (rootTarget) {
+            observeRootForViewportPrewarm(rootTarget);
+        }
+    }
+
     scheduleTranslationStateEvaluation('url-change');
     scheduleForcedFullPreprocess();
 }
@@ -2106,16 +2303,18 @@ function setupMutationObserver() {
             if (mutation.type === 'childList') {
                 mutation.addedNodes.forEach((node) => {
                     hasAddedNodes = true;
-                    schedulePreemptiveCapture(node);
+                    schedulePreemptiveCapture(node, 'mutation');
                     queueRootForPreprocess(node, false);
+                    observeRootForViewportPrewarm(node);
                 });
             }
 
             if (mutation.type === 'characterData' && mutation.target instanceof Text) {
                 const textNode = mutation.target;
                 if (!textNodeSnapshots.has(textNode)) {
-                    schedulePreemptiveCapture(textNode);
+                    schedulePreemptiveCapture(textNode, 'mutation');
                     queueRootForPreprocess(textNode, false);
+                    observeRootForViewportPrewarm(textNode);
                 } else if (Date.now() <= allowSnapshotForceRefreshUntil) {
                     queueRootForPreprocess(textNode, true);
                 }
@@ -3071,6 +3270,7 @@ function collectOriginalSegmentsFromSelection(selection) {
 
 function stopHeavyProcessing() {
     teardownMutationObserver();
+    teardownViewportPrewarmObserver();
     teardownLifecycleObserver();
     teardownNavigationObservers();
     unbindDelegatedInteractionListeners();
@@ -3103,6 +3303,7 @@ function startHeavyProcessing(forceRefresh = false) {
     }
 
     setupMutationObserver();
+    setupViewportPrewarmObserver();
     setupLifecycleObserver();
     setupNavigationObservers();
     evaluateTranslationState('start');
