@@ -60,6 +60,11 @@ const SHADOW_SCAN_GROWTH_THRESHOLD_PX = 72;
 const TRANSLATION_WAKE_POLL_INTERVAL_MS = IS_EDGE_BROWSER ? 980 : 1180;
 const TRANSLATION_WAKE_IDLE_TIMEOUT_MS = IS_EDGE_BROWSER ? 240 : 360;
 const VIEWPORT_PREWARM_ROOT_MARGIN = '1500px 0px';
+const LAYOUT_CALIBRATION_IDLE_TIMEOUT_MS = IS_EDGE_BROWSER ? 180 : 260;
+const MIN_LAYOUT_STRETCH_RATIO = 0.35;
+const MAX_LAYOUT_STRETCH_RATIO = 2.8;
+const MAX_LAYOUT_FRAME_DISTANCE_PX = 4200;
+const LAYOUT_ANCHOR_SELECTOR = 'img,svg,canvas,video,iframe,table,pre,code,[id],[data-testid],h1,h2,h3,h4,h5,h6';
 
 window[CONTENT_RUNTIME_KEY].browserProfile = BROWSER_PROFILE;
 
@@ -89,6 +94,11 @@ let baselineDocumentLang = '';
 let textNodeSnapshots = new WeakMap();
 let blockSnapshots = new WeakMap();
 let atomicOriginalTextByNode = new WeakMap();
+const layoutBlueprintIndex = new Map();
+let layoutBlueprintByNode = new WeakMap();
+const pendingLayoutCalibrationRoots = new Set();
+let layoutCalibrationHandle = null;
+let layoutCalibrationMode = 'none';
 const pendingRoots = new Map();
 const totalOriginalContentIndex = new Map();
 const signatureToIndexKeys = new Map();
@@ -376,8 +386,7 @@ function rememberOriginalContent(node, text, metadata = {}) {
         return;
     }
 
-    const source = typeof metadata.source === 'string' ? metadata.source : '';
-    const shouldBindAtomically = source.startsWith('prewarm') || translationStateMode !== 'translated';
+    const shouldBindAtomically = translationStateMode !== 'translated';
     if (shouldBindAtomically && !atomicOriginalTextByNode.has(node)) {
         atomicOriginalTextByNode.set(node, normalizedText);
     }
@@ -462,6 +471,382 @@ function getDocumentScrollHeight() {
         body ? body.offsetHeight : 0,
         doc ? doc.offsetHeight : 0
     );
+}
+
+function clearLayoutCalibrationHandle() {
+    if (layoutCalibrationHandle === null) {
+        return;
+    }
+
+    if (layoutCalibrationMode === 'idle' && typeof window.cancelIdleCallback === 'function') {
+        window.cancelIdleCallback(layoutCalibrationHandle);
+    } else {
+        window.clearTimeout(layoutCalibrationHandle);
+    }
+
+    layoutCalibrationHandle = null;
+    layoutCalibrationMode = 'none';
+}
+
+function measureElementLayoutInDocument(element) {
+    if (!(element instanceof Element)) {
+        return null;
+    }
+
+    const rect = element.getBoundingClientRect();
+    const top = rect.top + window.scrollY;
+    const height = Math.max(1, element.clientHeight || 0, rect.height || 0);
+    return {
+        top,
+        height,
+        bottom: top + height
+    };
+}
+
+function isLayoutAnchorBoundary(boundaryElement) {
+    if (!(boundaryElement instanceof Element)) {
+        return false;
+    }
+
+    if ((boundaryElement.id || '').trim().length > 0) {
+        return true;
+    }
+
+    if (boundaryElement.hasAttribute('data-testid') || boundaryElement.hasAttribute('name')) {
+        return true;
+    }
+
+    return Boolean(boundaryElement.matches(LAYOUT_ANCHOR_SELECTOR) || boundaryElement.querySelector(LAYOUT_ANCHOR_SELECTOR));
+}
+
+function getLayoutBlueprintFrameForBoundary(boundaryElement) {
+    if (!(boundaryElement instanceof Element)) {
+        return null;
+    }
+
+    const now = Date.now();
+    const frameByNode = layoutBlueprintByNode.get(boundaryElement);
+    if (frameByNode) {
+        frameByNode.lastSeenAt = now;
+        return frameByNode;
+    }
+
+    const key = getIndexKeyForNode(boundaryElement);
+    if (!key) {
+        return null;
+    }
+
+    let frame = layoutBlueprintIndex.get(key);
+    if (!frame) {
+        frame = {
+            key,
+            selectorPath: buildNodeDomPath(boundaryElement),
+            isAnchor: isLayoutAnchorBoundary(boundaryElement),
+            originalTop: NaN,
+            originalHeight: NaN,
+            originalBottom: NaN,
+            translatedTop: NaN,
+            translatedHeight: NaN,
+            translatedBottom: NaN,
+            lastOriginalCaptureAt: 0,
+            lastTranslatedCaptureAt: 0,
+            lastSeenAt: now,
+            source: ''
+        };
+        layoutBlueprintIndex.set(key, frame);
+    }
+
+    if (!frame.selectorPath) {
+        frame.selectorPath = buildNodeDomPath(boundaryElement);
+    }
+
+    if (!frame.isAnchor) {
+        frame.isAnchor = isLayoutAnchorBoundary(boundaryElement);
+    }
+
+    frame.lastSeenAt = now;
+    layoutBlueprintByNode.set(boundaryElement, frame);
+    return frame;
+}
+
+function captureBoundaryLayoutBlueprint(boundaryElement, options = {}) {
+    const frame = getLayoutBlueprintFrameForBoundary(boundaryElement);
+    if (!frame) {
+        return null;
+    }
+
+    const layout = measureElementLayoutInDocument(boundaryElement);
+    if (!layout) {
+        return frame;
+    }
+
+    const source = typeof options.source === 'string' ? options.source : '';
+    const captureOriginal = options.captureOriginal === true;
+    const captureTranslated = options.captureTranslated === true;
+    const forceOriginal = options.forceOriginal === true;
+    const now = Date.now();
+
+    if (captureOriginal) {
+        const shouldRefreshOriginal = forceOriginal
+            || !Number.isFinite(frame.originalTop)
+            || !Number.isFinite(frame.originalHeight)
+            || translationStateMode !== 'translated';
+
+        if (shouldRefreshOriginal) {
+            frame.originalTop = layout.top;
+            frame.originalHeight = layout.height;
+            frame.originalBottom = layout.bottom;
+            frame.lastOriginalCaptureAt = now;
+        }
+    }
+
+    if (captureTranslated) {
+        frame.translatedTop = layout.top;
+        frame.translatedHeight = layout.height;
+        frame.translatedBottom = layout.bottom;
+        frame.lastTranslatedCaptureAt = now;
+    }
+
+    if (source) {
+        frame.source = source;
+    }
+
+    return frame;
+}
+
+function captureLayoutBlueprintFromRoot(root, source = 'layout-sync') {
+    const normalizedRoot = normalizeCaptureRoot(root);
+    if (!normalizedRoot) {
+        return;
+    }
+
+    const boundaries = collectBlockBoundaries(normalizedRoot);
+    if (boundaries.size === 0) {
+        return;
+    }
+
+    const captureOriginal = translationStateMode !== 'translated';
+    const captureTranslated = translationStateMode === 'translated';
+
+    boundaries.forEach((boundary) => {
+        captureBoundaryLayoutBlueprint(boundary, {
+            source,
+            captureOriginal,
+            captureTranslated,
+            forceOriginal: false
+        });
+    });
+}
+
+function getLayoutStretchRatio(frame) {
+    if (!frame) {
+        return 1;
+    }
+
+    if (
+        !Number.isFinite(frame.originalHeight)
+        || !Number.isFinite(frame.translatedHeight)
+        || frame.originalHeight <= 0
+        || frame.translatedHeight <= 0
+    ) {
+        return 1;
+    }
+
+    const ratio = frame.translatedHeight / frame.originalHeight;
+    return Math.max(MIN_LAYOUT_STRETCH_RATIO, Math.min(MAX_LAYOUT_STRETCH_RATIO, ratio));
+}
+
+function findNearestAnchorLayoutFrame(pageY) {
+    let bestFrame = null;
+    let bestDistance = Infinity;
+
+    for (const frame of layoutBlueprintIndex.values()) {
+        if (!frame?.isAnchor) {
+            continue;
+        }
+
+        if (!Number.isFinite(frame.originalTop) || !Number.isFinite(frame.translatedTop)) {
+            continue;
+        }
+
+        const distance = Math.abs(pageY - frame.translatedTop);
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            bestFrame = frame;
+        }
+    }
+
+    if (bestDistance > MAX_LAYOUT_FRAME_DISTANCE_PX) {
+        return null;
+    }
+
+    return bestFrame;
+}
+
+function findNearestLayoutFrameByOriginalY(originalY) {
+    let bestFrame = null;
+    let bestDistance = Infinity;
+
+    for (const frame of layoutBlueprintIndex.values()) {
+        if (!Number.isFinite(frame.originalTop) || !Number.isFinite(frame.originalBottom)) {
+            continue;
+        }
+
+        let distance = 0;
+        if (originalY < frame.originalTop) {
+            distance = frame.originalTop - originalY;
+        } else if (originalY > frame.originalBottom) {
+            distance = originalY - frame.originalBottom;
+        }
+
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            bestFrame = frame;
+            if (distance === 0) {
+                break;
+            }
+        }
+    }
+
+    if (bestDistance > MAX_LAYOUT_FRAME_DISTANCE_PX) {
+        return null;
+    }
+
+    return bestFrame;
+}
+
+function getLayoutFrameOriginalText(frame) {
+    if (!frame || !frame.key) {
+        return '';
+    }
+
+    const record = totalOriginalContentIndex.get(frame.key);
+    if (!record || typeof record.originalText !== 'string' || record.originalText.length === 0) {
+        return '';
+    }
+
+    return truncateTooltipText(record.originalText);
+}
+
+function computeCompensatedOriginalY(pageY, boundaryFrame, anchorFrame) {
+    let compensatedY = pageY;
+
+    if (
+        boundaryFrame
+        && Number.isFinite(boundaryFrame.originalTop)
+        && Number.isFinite(boundaryFrame.translatedTop)
+    ) {
+        const stretchRatio = getLayoutStretchRatio(boundaryFrame);
+        const localTranslatedOffset = pageY - boundaryFrame.translatedTop;
+        compensatedY = boundaryFrame.originalTop + (localTranslatedOffset / stretchRatio);
+    }
+
+    if (
+        anchorFrame
+        && Number.isFinite(anchorFrame.originalTop)
+        && Number.isFinite(anchorFrame.translatedTop)
+    ) {
+        const anchorShift = anchorFrame.translatedTop - anchorFrame.originalTop;
+        const anchoredY = pageY - anchorShift;
+        if (!Number.isFinite(compensatedY)) {
+            return anchoredY;
+        }
+
+        return (compensatedY * 0.68) + (anchoredY * 0.32);
+    }
+
+    return compensatedY;
+}
+
+function getLayoutCompensatedOriginalTextFromClick(clientX, clientY, boundaryHint = null, strictHit = null) {
+    const pageY = clientY + window.scrollY;
+
+    let boundaryElement = strictHit?.boundaryElement instanceof Element
+        ? strictHit.boundaryElement
+        : (boundaryHint instanceof Element ? boundaryHint : null);
+
+    if (!boundaryElement && strictHit?.node instanceof Text) {
+        boundaryElement = getBlockBoundaryElement(strictHit.node.parentElement);
+    }
+
+    if (!boundaryElement) {
+        const pointTarget = document.elementFromPoint(clientX, clientY);
+        if (pointTarget instanceof Element) {
+            boundaryElement = getBlockBoundaryElement(pointTarget);
+        }
+    }
+
+    let boundaryFrame = null;
+    if (boundaryElement instanceof Element) {
+        boundaryFrame = captureBoundaryLayoutBlueprint(boundaryElement, {
+            source: 'click-calibration',
+            captureOriginal: translationStateMode !== 'translated',
+            captureTranslated: translationStateMode === 'translated',
+            forceOriginal: false
+        });
+    }
+
+    const anchorFrame = findNearestAnchorLayoutFrame(pageY);
+    const compensatedOriginalY = computeCompensatedOriginalY(pageY, boundaryFrame, anchorFrame);
+    const mappedFrame = findNearestLayoutFrameByOriginalY(compensatedOriginalY) || boundaryFrame || anchorFrame;
+    const frameText = getLayoutFrameOriginalText(mappedFrame);
+    if (frameText) {
+        return frameText;
+    }
+
+    if (boundaryElement) {
+        const indexed = getIndexedOriginalTextFromNode(boundaryElement);
+        if (indexed) {
+            return truncateTooltipText(indexed);
+        }
+    }
+
+    return '';
+}
+
+function flushLayoutCalibrationQueue() {
+    layoutCalibrationHandle = null;
+    layoutCalibrationMode = 'none';
+
+    if (!featureEnabled || pendingLayoutCalibrationRoots.size === 0) {
+        pendingLayoutCalibrationRoots.clear();
+        return;
+    }
+
+    const queuedRoots = Array.from(pendingLayoutCalibrationRoots.values());
+    pendingLayoutCalibrationRoots.clear();
+
+    const source = translationStateMode === 'translated'
+        ? 'translated-idle-calibration'
+        : 'original-idle-calibration';
+
+    queuedRoots.forEach((root) => {
+        captureLayoutBlueprintFromRoot(root, source);
+    });
+}
+
+function scheduleLayoutCalibration(root) {
+    const normalizedRoot = normalizeCaptureRoot(root);
+    if (!normalizedRoot) {
+        return;
+    }
+
+    pendingLayoutCalibrationRoots.add(normalizedRoot);
+    if (layoutCalibrationHandle !== null) {
+        return;
+    }
+
+    if (typeof window.requestIdleCallback === 'function') {
+        layoutCalibrationMode = 'idle';
+        layoutCalibrationHandle = window.requestIdleCallback(
+            flushLayoutCalibrationQueue,
+            { timeout: LAYOUT_CALIBRATION_IDLE_TIMEOUT_MS }
+        );
+        return;
+    }
+
+    layoutCalibrationMode = 'timeout';
+    layoutCalibrationHandle = window.setTimeout(flushLayoutCalibrationQueue, PREPROCESS_QUEUE_FLUSH_DELAY_MS);
 }
 
 function clearPreemptiveCaptureHandle() {
@@ -1363,6 +1748,13 @@ function preprocessBoundary(boundaryElement, force = false) {
 
     blockSnapshots.set(boundaryElement, blockSnapshot);
     blockDisplayProjectionCache.delete(boundaryElement);
+    captureBoundaryLayoutBlueprint(boundaryElement, {
+        source: force ? 'preprocess-force' : 'preprocess',
+        captureOriginal: translationStateMode !== 'translated',
+        captureTranslated: translationStateMode === 'translated',
+        forceOriginal: force && translationStateMode !== 'translated'
+    });
+
     rememberOriginalContent(boundaryElement, blockSnapshot.originalText, {
         blockTag: blockSnapshot.blockTag,
         source: 'boundary-snapshot',
@@ -1699,8 +2091,12 @@ function flushPreemptiveCaptureRoots() {
             : 'mutation';
 
         captureOriginalTextNodesFromRoot(root, `${sourceLabel}-raf`);
+        captureLayoutBlueprintFromRoot(root, `${sourceLabel}-layout-raf`);
         queueRootForPreprocess(root, false);
         observeRootForViewportPrewarm(root);
+        if (translationStateMode === 'translated') {
+            scheduleLayoutCalibration(root);
+        }
     });
 }
 
@@ -1716,8 +2112,12 @@ function schedulePreemptiveCapture(root, source = 'mutation') {
 
     // Grab text in the current task first, then consolidate on next frame.
     captureOriginalTextNodesFromRoot(normalizedRoot, `${sourceLabel}-sync`);
+    captureLayoutBlueprintFromRoot(normalizedRoot, `${sourceLabel}-layout-sync`);
     preemptiveCaptureRoots.set(normalizedRoot, sourceLabel);
     observeRootForViewportPrewarm(normalizedRoot);
+    if (translationStateMode === 'translated') {
+        scheduleLayoutCalibration(normalizedRoot);
+    }
 
     if (preemptiveCaptureHandle !== null) {
         return;
@@ -1906,6 +2306,8 @@ function clearOldSnapshots(options = {}) {
     preemptiveCaptureRoots.clear();
     pendingViewportPrewarmCaptures.clear();
     viewportPrewarmCaptureQueued = false;
+    clearLayoutCalibrationHandle();
+    pendingLayoutCalibrationRoots.clear();
 
     clearLowPriorityScanHandle();
     lowPriorityBoundaries.clear();
@@ -1921,6 +2323,7 @@ function clearOldSnapshots(options = {}) {
     blockDisplayProjectionCache = new WeakMap();
     textNodeSnapshots = new WeakMap();
     blockSnapshots = new WeakMap();
+    layoutBlueprintByNode = new WeakMap();
     liveSnapshotBoundaryKeys.clear();
     nodeOriginalIndexKeys = new WeakMap();
 
@@ -1928,6 +2331,7 @@ function clearOldSnapshots(options = {}) {
         totalOriginalContentIndex.clear();
         signatureToIndexKeys.clear();
         atomicOriginalTextByNode = new WeakMap();
+        layoutBlueprintIndex.clear();
     }
 }
 
@@ -2001,6 +2405,7 @@ function handleTranslationModeTransition(previousMode, nextMode, reason = 'state
 
     if (nextMode === 'translated') {
         forceLifecycleHotStart(reason);
+        scheduleLayoutCalibration(document.body || document.documentElement);
         return;
     }
 
@@ -2009,6 +2414,7 @@ function handleTranslationModeTransition(previousMode, nextMode, reason = 'state
     observedScrollHeight = getDocumentScrollHeight();
     shadowScanCursorY = 0;
     scheduleIdleShadowScan();
+    scheduleLayoutCalibration(document.body || document.documentElement);
     hideTooltip();
 }
 
@@ -2104,6 +2510,7 @@ function setupLifecycleObserver() {
         if (bodyChanged) {
             refreshLifecycleObserverTargets();
             bindDelegatedInteractionListeners();
+            scheduleLayoutCalibration(document.body || document.documentElement);
         }
 
         if (shouldEvaluate) {
@@ -2228,8 +2635,12 @@ function maybeHandleUrlChange() {
 
     lastKnownUrl = currentUrl;
     atomicOriginalTextByNode = new WeakMap();
+    layoutBlueprintByNode = new WeakMap();
+    layoutBlueprintIndex.clear();
     pendingViewportPrewarmCaptures.clear();
     viewportPrewarmCaptureQueued = false;
+    clearLayoutCalibrationHandle();
+    pendingLayoutCalibrationRoots.clear();
     if (viewportPrewarmObserver) {
         viewportPrewarmObserver.disconnect();
         viewportPrewarmBoundaries = new WeakSet();
@@ -2306,6 +2717,9 @@ function setupMutationObserver() {
                     schedulePreemptiveCapture(node, 'mutation');
                     queueRootForPreprocess(node, false);
                     observeRootForViewportPrewarm(node);
+                    if (translationStateMode === 'translated') {
+                        scheduleLayoutCalibration(node);
+                    }
                 });
             }
 
@@ -2315,8 +2729,14 @@ function setupMutationObserver() {
                     schedulePreemptiveCapture(textNode, 'mutation');
                     queueRootForPreprocess(textNode, false);
                     observeRootForViewportPrewarm(textNode);
+                    if (translationStateMode === 'translated') {
+                        scheduleLayoutCalibration(textNode);
+                    }
                 } else if (Date.now() <= allowSnapshotForceRefreshUntil) {
                     queueRootForPreprocess(textNode, true);
+                    if (translationStateMode === 'translated') {
+                        scheduleLayoutCalibration(textNode);
+                    }
                 }
             }
         }
@@ -2480,6 +2900,142 @@ function isPointOnTextGlyph(textNode, offset, clientX, clientY) {
     }
 
     return false;
+}
+
+function hasMeaningfulTextContent(text) {
+    return /[^\s\u00a0\u200b\u200c\u200d]/.test(text || '');
+}
+
+function parseCssPixelValue(value) {
+    const numeric = Number.parseFloat(value || '');
+    return Number.isFinite(numeric) ? numeric : NaN;
+}
+
+function isElementSuppressedFromTooltip(element) {
+    if (!(element instanceof Element)) {
+        return true;
+    }
+
+    if (element.closest('[hidden], [aria-hidden="true"]')) {
+        return true;
+    }
+
+    const style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden') {
+        return true;
+    }
+
+    const opacity = parseCssPixelValue(style.opacity);
+    if (Number.isFinite(opacity) && opacity <= 0.01) {
+        return true;
+    }
+
+    if (style.position === 'absolute' || style.position === 'fixed') {
+        const left = parseCssPixelValue(style.left);
+        const top = parseCssPixelValue(style.top);
+        if ((Number.isFinite(left) && left <= -9000) || (Number.isFinite(top) && top <= -9000)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function isNodeSuppressedFromTooltip(node) {
+    let cursor = node instanceof Text
+        ? node.parentElement
+        : (node instanceof Element ? node : null);
+
+    while (cursor && cursor !== document.documentElement) {
+        if (isElementSuppressedFromTooltip(cursor)) {
+            return true;
+        }
+
+        cursor = cursor.parentElement;
+    }
+
+    return false;
+}
+
+function getStrictTextHitFromPoint(clientX, clientY, boundaryHint = null) {
+    const caret = getCaretInfoFromPoint(clientX, clientY);
+    if (!caret || !(caret.node instanceof Text)) {
+        return null;
+    }
+
+    const textNode = caret.node;
+    if (shouldSkipTextNode(textNode)) {
+        return null;
+    }
+
+    if (isNodeSuppressedFromTooltip(textNode)) {
+        return null;
+    }
+
+    const textValue = textNode.nodeValue || '';
+    if (!hasMeaningfulTextContent(textValue)) {
+        return null;
+    }
+
+    const textLength = textValue.length;
+    const safeOffset = Math.max(0, Math.min(caret.offset, textLength));
+    const candidateRanges = [];
+
+    if (safeOffset > 0) {
+        candidateRanges.push({ start: safeOffset - 1, end: safeOffset });
+    }
+
+    if (safeOffset < textLength) {
+        candidateRanges.push({ start: safeOffset, end: safeOffset + 1 });
+    }
+
+    if (candidateRanges.length === 0 && textLength > 0) {
+        candidateRanges.push({ start: textLength - 1, end: textLength });
+    }
+
+    for (const candidate of candidateRanges) {
+        const glyphText = textValue.slice(candidate.start, candidate.end);
+        if (!hasMeaningfulTextContent(glyphText)) {
+            continue;
+        }
+
+        const range = document.createRange();
+        try {
+            range.setStart(textNode, candidate.start);
+            range.setEnd(textNode, candidate.end);
+        } catch (_error) {
+            continue;
+        }
+
+        const rects = Array.from(range.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0);
+        if (rects.length === 0) {
+            continue;
+        }
+
+        const hasDirectCollision = rects.some((rect) => (
+            clientX >= rect.left
+            && clientX <= rect.right
+            && clientY >= rect.top
+            && clientY <= rect.bottom
+        ));
+
+        if (!hasDirectCollision) {
+            continue;
+        }
+
+        const boundaryElement = boundaryHint instanceof Element
+            ? boundaryHint
+            : getBlockBoundaryElement(textNode.parentElement);
+
+        return {
+            node: textNode,
+            offset: safeOffset,
+            boundaryElement,
+            range
+        };
+    }
+
+    return null;
 }
 
 function clampToUnit(value) {
@@ -3085,54 +3641,77 @@ function createRangeFromProjection(projection, startOffset, endOffset) {
     return range;
 }
 
-function getOriginalSegmentFromClick(clientX, clientY, boundaryHint = null) {
-    const caret = getCaretInfoFromPoint(clientX, clientY);
-    if (!caret || !(caret.node instanceof Text)) return '';
-    if ((caret.node.nodeValue || '').trim().length === 0) return '';
+function getOriginalSegmentFromClick(clientX, clientY, boundaryHint = null, strictHit = null) {
+    const resolvedHit = strictHit || getStrictTextHitFromPoint(clientX, clientY, boundaryHint);
+    if (!resolvedHit || !(resolvedHit.node instanceof Text)) {
+        return '';
+    }
 
-    const textNodeSnapshot = textNodeSnapshots.get(caret.node);
+    let compensatedTextCache;
+    const getCompensatedText = () => {
+        if (compensatedTextCache !== undefined) {
+            return compensatedTextCache;
+        }
+
+        compensatedTextCache = getLayoutCompensatedOriginalTextFromClick(
+            clientX,
+            clientY,
+            resolvedHit.boundaryElement || boundaryHint,
+            resolvedHit
+        );
+        return compensatedTextCache;
+    };
+
+    const caretNode = resolvedHit.node;
+    if ((caretNode.nodeValue || '').trim().length === 0) return '';
+
+    const textNodeSnapshot = textNodeSnapshots.get(caretNode);
     const boundaryElement = textNodeSnapshot?.blockElement
+        || resolvedHit.boundaryElement
         || boundaryHint
-        || getBlockBoundaryElement(caret.node.parentElement);
+        || getBlockBoundaryElement(caretNode.parentElement);
     if (!boundaryElement) return '';
 
     const blockSnapshot = blockSnapshots.get(boundaryElement);
     if (!blockSnapshot) {
-        const indexed = getIndexedOriginalTextFromNode(caret.node);
-        return indexed ? truncateTooltipText(indexed) : '';
+        const indexed = getIndexedOriginalTextFromNode(caretNode);
+        if (indexed) {
+            return truncateTooltipText(indexed);
+        }
+        return getCompensatedText();
     }
 
     const projection = buildBlockDisplayProjection(blockSnapshot);
-    if (!projection || projection.displayText.trim().length === 0) return '';
+    if (!projection || projection.displayText.trim().length === 0) return getCompensatedText();
 
-    const targetNodeRange = projection.nodeRanges.find((item) => item.node === caret.node);
-    if (!targetNodeRange) return '';
+    const targetNodeRange = projection.nodeRanges.find((item) => item.node === caretNode);
+    if (!targetNodeRange) return getCompensatedText();
 
-    const nodeTextLength = (caret.node.nodeValue || '').length;
-    const safeCaretOffset = Math.max(0, Math.min(caret.offset, nodeTextLength));
-    if (!isPointOnTextGlyph(caret.node, safeCaretOffset, clientX, clientY)) {
+    const nodeTextLength = (caretNode.nodeValue || '').length;
+    const safeCaretOffset = Math.max(0, Math.min(resolvedHit.offset, nodeTextLength));
+    if (!isPointOnTextGlyph(caretNode, safeCaretOffset, clientX, clientY)) {
         return '';
     }
 
     const displayOffset = targetNodeRange.start + safeCaretOffset;
 
     const displaySegments = projection.displaySegments || [];
-    if (displaySegments.length === 0) return '';
+    if (displaySegments.length === 0) return getCompensatedText();
 
     const displayIndex = findSegmentIndexByOffset(displaySegments, displayOffset);
 
-    if (displayIndex === -1) return '';
+    if (displayIndex === -1) return getCompensatedText();
 
     const displaySegment = displaySegments[displayIndex];
-    if (!displaySegment) return '';
+    if (!displaySegment) return getCompensatedText();
 
     const hitRange = createRangeFromProjection(projection, displaySegment.start, displaySegment.end);
     if (!hitRange) {
-        return '';
+        return getCompensatedText();
     }
 
     if (!isPointNearTextRange(hitRange, clientX, clientY)) {
-        return '';
+        return getCompensatedText();
     }
 
     const mapping = mapDisplaySegmentToOriginal(
@@ -3143,7 +3722,7 @@ function getOriginalSegmentFromClick(clientX, clientY, boundaryHint = null) {
         blockSnapshot.originalText
     );
 
-    const absoluteOffsetInBlock = getTextNodeOffsetInBlock(caret.node, boundaryElement);
+    const absoluteOffsetInBlock = getTextNodeOffsetInBlock(caretNode, boundaryElement);
     const absoluteOriginalIndex = absoluteOffsetInBlock >= 0
         ? findSegmentIndexByOffset(
             blockSnapshot.originalSegments,
@@ -3152,6 +3731,11 @@ function getOriginalSegmentFromClick(clientX, clientY, boundaryHint = null) {
         : -1;
 
     if (mapping.index < 0) {
+        const compensated = getCompensatedText();
+        if (compensated) {
+            return compensated;
+        }
+
         if (absoluteOriginalIndex >= 0) {
             return chooseFallbackOriginalText(blockSnapshot, absoluteOriginalIndex);
         }
@@ -3159,17 +3743,32 @@ function getOriginalSegmentFromClick(clientX, clientY, boundaryHint = null) {
     }
 
     if (displaySegments.length === 1 && blockSnapshot.originalSegments.length > 1) {
+        const compensated = getCompensatedText();
+        if (compensated) {
+            return compensated;
+        }
+
         return chooseFallbackOriginalText(blockSnapshot, mapping.index);
     }
 
     if (mapping.confidence < LOW_CONFIDENCE_THRESHOLD) {
+        const compensated = getCompensatedText();
+        if (compensated) {
+            return compensated;
+        }
+
         if (absoluteOriginalIndex >= 0) {
             return chooseFallbackOriginalText(blockSnapshot, absoluteOriginalIndex);
         }
         return chooseFallbackOriginalText(blockSnapshot, mapping.index);
     }
 
-    return blockSnapshot.originalSegments[mapping.index]?.text || '';
+    const direct = blockSnapshot.originalSegments[mapping.index]?.text || '';
+    if (direct) {
+        return direct;
+    }
+
+    return getCompensatedText();
 }
 
 function rangesIntersect(rangeA, rangeB) {
@@ -3308,6 +3907,7 @@ function startHeavyProcessing(forceRefresh = false) {
     setupNavigationObservers();
     evaluateTranslationState('start');
     runFullPreprocess(forceRefresh, { anchorY: window.scrollY });
+    scheduleLayoutCalibration(document.body || document.documentElement);
     scheduleIdleShadowScan();
     scheduleTranslationWakePoll();
 }
@@ -3378,8 +3978,22 @@ function handleDelegatedBodyClick(event) {
         return;
     }
 
+    const targetElement = event.target instanceof Text
+        ? event.target.parentElement
+        : (event.target instanceof Element ? event.target : null);
+    if (targetElement && isElementSuppressedFromTooltip(targetElement)) {
+        hideTooltip();
+        return;
+    }
+
     const boundaryHint = resolveBoundaryFromEventTarget(event.target);
-    const text = getOriginalSegmentFromClick(event.clientX, event.clientY, boundaryHint);
+    const strictHit = getStrictTextHitFromPoint(event.clientX, event.clientY, boundaryHint);
+    if (!strictHit) {
+        hideTooltip();
+        return;
+    }
+
+    const text = getOriginalSegmentFromClick(event.clientX, event.clientY, boundaryHint, strictHit);
     if (text) {
         showTooltip(text, event.clientX, event.clientY);
         return;
