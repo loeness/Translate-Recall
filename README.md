@@ -1,4 +1,4 @@
-# Translate Recall - v1.4
+# Translate Recall - v1.5
 
 一个用于 Edge/Chrome 的 MV3 扩展：在页面翻译后，点击字词即可查看对应句的原语言文本。
 
@@ -44,6 +44,7 @@ Translate Recall/
 │   │   └── content.js
 │   └── background/
 │       └── .gitkeep
+├──.gitignore
 ├── README.md
 └── LICENSE
 ```
