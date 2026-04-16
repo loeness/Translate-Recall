@@ -1123,19 +1123,23 @@ function collectBoundaryTextNodes(boundaryElement) {
     return textNodes;
 }
 
-function buildBlockOriginalSnapshot(boundaryElement, textNodes) {
+function buildBlockOriginalSnapshot(boundaryElement, textNodes, options = {}) {
     if (!boundaryElement || !Array.isArray(textNodes) || textNodes.length === 0) {
         return null;
     }
 
-    let originalText = '';
+    const preservedOriginalText = typeof options.preservedOriginalText === 'string'
+        ? options.preservedOriginalText.trim()
+        : '';
+
+    let liveText = '';
     const nodeRanges = [];
 
     textNodes.forEach((textNode) => {
-        const start = originalText.length;
+        const start = liveText.length;
         const value = textNode.nodeValue || '';
-        originalText += value;
-        const end = originalText.length;
+        liveText += value;
+        const end = liveText.length;
 
         nodeRanges.push({
             node: textNode,
@@ -1144,9 +1148,11 @@ function buildBlockOriginalSnapshot(boundaryElement, textNodes) {
         });
     });
 
-    if (originalText.trim().length === 0) {
+    if (liveText.trim().length === 0) {
         return null;
     }
+
+    const originalText = preservedOriginalText || liveText;
 
     const segments = splitTextIntoSegments(originalText);
     if (segments.length === 0) {
@@ -1166,7 +1172,8 @@ function buildBlockOriginalSnapshot(boundaryElement, textNodes) {
         originalSegments: segments,
         originalCoarseSegments: coarseSegments.length > 0 ? coarseSegments : segments,
         nodeRanges,
-        indexedAt: Date.now()
+        indexedAt: Date.now(),
+        usesPreservedOriginalText: Boolean(preservedOriginalText)
     };
 }
 
@@ -1185,7 +1192,15 @@ function snapshotTextNode(textNode, blockSnapshot, nodeStart, nodeEnd) {
         indexedAt: blockSnapshot.indexedAt
     });
 
+    if (blockSnapshot.usesPreservedOriginalText) {
+        return;
+    }
+
     const originalNodeText = blockSnapshot.originalText.slice(nodeStart, nodeEnd);
+    if (!originalNodeText) {
+        return;
+    }
+
     rememberOriginalContent(textNode, originalNodeText, {
         blockTag: blockSnapshot.blockTag,
         source: 'block-snapshot',
@@ -1207,7 +1222,14 @@ function preprocessBoundary(boundaryElement, force = false) {
     }
 
     const textNodes = collectBoundaryTextNodes(boundaryElement);
-    const blockSnapshot = buildBlockOriginalSnapshot(boundaryElement, textNodes);
+    const shouldPreferIndexedOriginal = translationStateMode === 'translated' && !force;
+    const preservedOriginalText = shouldPreferIndexedOriginal
+        ? getIndexedOriginalTextFromNode(boundaryElement)
+        : '';
+
+    const blockSnapshot = buildBlockOriginalSnapshot(boundaryElement, textNodes, {
+        preservedOriginalText
+    });
     if (!blockSnapshot) {
         blockSnapshots.delete(boundaryElement);
         blockDisplayProjectionCache.delete(boundaryElement);
@@ -1813,7 +1835,7 @@ function forceLifecycleHotStart(reason = 'unknown') {
 
     clearOldSnapshots({ preserveIndex: true });
     rehydrateOriginalIndexReferences();
-    runFullPreprocess(true, { anchorY: window.scrollY });
+    runFullPreprocess(false, { anchorY: window.scrollY });
     observedScrollHeight = getDocumentScrollHeight();
     shadowScanCursorY = 0;
     scheduleShadowScan(true);
@@ -2142,9 +2164,16 @@ function showTooltip(text, clientX, clientY) {
     const tip = ensureTooltip();
     if (!tip) return;
 
+    while (tip.firstChild) {
+        tip.removeChild(tip.firstChild);
+    }
+
+    tip.classList.add('notranslate');
+    tip.setAttribute('translate', 'no');
+    tip.setAttribute('lang', 'und');
+
     // Render from an attribute to avoid browser translators rewriting a text node.
     tip.setAttribute('data-original-text', text);
-    tip.textContent = '';
     tip.style.display = 'block';
 
     const tooltipRect = tip.getBoundingClientRect();

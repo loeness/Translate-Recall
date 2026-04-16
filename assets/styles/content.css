@@ -15,6 +15,11 @@
   font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
 }
 
+/* Hide any nodes injected by browser translators so only pseudo-content is visible. */
+#bilingual-tooltip * {
+  display: none !important;
+}
+
 #bilingual-tooltip::before {
   content: attr(data-original-text);
   display: block;
