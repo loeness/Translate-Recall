@@ -758,10 +758,17 @@ function computeCompensatedOriginalY(pageY, boundaryFrame, anchorFrame) {
     return compensatedY;
 }
 
-function getLayoutCompensatedOriginalTextFromClick(clientX, clientY, boundaryHint = null) {
+function getLayoutCompensatedOriginalTextFromClick(clientX, clientY, boundaryHint = null, strictHit = null) {
     const pageY = clientY + window.scrollY;
 
-    let boundaryElement = boundaryHint instanceof Element ? boundaryHint : null;
+    let boundaryElement = strictHit?.boundaryElement instanceof Element
+        ? strictHit.boundaryElement
+        : (boundaryHint instanceof Element ? boundaryHint : null);
+
+    if (!boundaryElement && strictHit?.node instanceof Text) {
+        boundaryElement = getBlockBoundaryElement(strictHit.node.parentElement);
+    }
+
     if (!boundaryElement) {
         const pointTarget = document.elementFromPoint(clientX, clientY);
         if (pointTarget instanceof Element) {
@@ -2895,6 +2902,142 @@ function isPointOnTextGlyph(textNode, offset, clientX, clientY) {
     return false;
 }
 
+function hasMeaningfulTextContent(text) {
+    return /[^\s\u00a0\u200b\u200c\u200d]/.test(text || '');
+}
+
+function parseCssPixelValue(value) {
+    const numeric = Number.parseFloat(value || '');
+    return Number.isFinite(numeric) ? numeric : NaN;
+}
+
+function isElementSuppressedFromTooltip(element) {
+    if (!(element instanceof Element)) {
+        return true;
+    }
+
+    if (element.closest('[hidden], [aria-hidden="true"]')) {
+        return true;
+    }
+
+    const style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden') {
+        return true;
+    }
+
+    const opacity = parseCssPixelValue(style.opacity);
+    if (Number.isFinite(opacity) && opacity <= 0.01) {
+        return true;
+    }
+
+    if (style.position === 'absolute' || style.position === 'fixed') {
+        const left = parseCssPixelValue(style.left);
+        const top = parseCssPixelValue(style.top);
+        if ((Number.isFinite(left) && left <= -9000) || (Number.isFinite(top) && top <= -9000)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function isNodeSuppressedFromTooltip(node) {
+    let cursor = node instanceof Text
+        ? node.parentElement
+        : (node instanceof Element ? node : null);
+
+    while (cursor && cursor !== document.documentElement) {
+        if (isElementSuppressedFromTooltip(cursor)) {
+            return true;
+        }
+
+        cursor = cursor.parentElement;
+    }
+
+    return false;
+}
+
+function getStrictTextHitFromPoint(clientX, clientY, boundaryHint = null) {
+    const caret = getCaretInfoFromPoint(clientX, clientY);
+    if (!caret || !(caret.node instanceof Text)) {
+        return null;
+    }
+
+    const textNode = caret.node;
+    if (shouldSkipTextNode(textNode)) {
+        return null;
+    }
+
+    if (isNodeSuppressedFromTooltip(textNode)) {
+        return null;
+    }
+
+    const textValue = textNode.nodeValue || '';
+    if (!hasMeaningfulTextContent(textValue)) {
+        return null;
+    }
+
+    const textLength = textValue.length;
+    const safeOffset = Math.max(0, Math.min(caret.offset, textLength));
+    const candidateRanges = [];
+
+    if (safeOffset > 0) {
+        candidateRanges.push({ start: safeOffset - 1, end: safeOffset });
+    }
+
+    if (safeOffset < textLength) {
+        candidateRanges.push({ start: safeOffset, end: safeOffset + 1 });
+    }
+
+    if (candidateRanges.length === 0 && textLength > 0) {
+        candidateRanges.push({ start: textLength - 1, end: textLength });
+    }
+
+    for (const candidate of candidateRanges) {
+        const glyphText = textValue.slice(candidate.start, candidate.end);
+        if (!hasMeaningfulTextContent(glyphText)) {
+            continue;
+        }
+
+        const range = document.createRange();
+        try {
+            range.setStart(textNode, candidate.start);
+            range.setEnd(textNode, candidate.end);
+        } catch (_error) {
+            continue;
+        }
+
+        const rects = Array.from(range.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0);
+        if (rects.length === 0) {
+            continue;
+        }
+
+        const hasDirectCollision = rects.some((rect) => (
+            clientX >= rect.left
+            && clientX <= rect.right
+            && clientY >= rect.top
+            && clientY <= rect.bottom
+        ));
+
+        if (!hasDirectCollision) {
+            continue;
+        }
+
+        const boundaryElement = boundaryHint instanceof Element
+            ? boundaryHint
+            : getBlockBoundaryElement(textNode.parentElement);
+
+        return {
+            node: textNode,
+            offset: safeOffset,
+            boundaryElement,
+            range
+        };
+    }
+
+    return null;
+}
+
 function clampToUnit(value) {
     if (!Number.isFinite(value)) return 0;
     return Math.max(0, Math.min(1, value));
@@ -3498,30 +3641,40 @@ function createRangeFromProjection(projection, startOffset, endOffset) {
     return range;
 }
 
-function getOriginalSegmentFromClick(clientX, clientY, boundaryHint = null) {
+function getOriginalSegmentFromClick(clientX, clientY, boundaryHint = null, strictHit = null) {
+    const resolvedHit = strictHit || getStrictTextHitFromPoint(clientX, clientY, boundaryHint);
+    if (!resolvedHit || !(resolvedHit.node instanceof Text)) {
+        return '';
+    }
+
     let compensatedTextCache;
     const getCompensatedText = () => {
         if (compensatedTextCache !== undefined) {
             return compensatedTextCache;
         }
 
-        compensatedTextCache = getLayoutCompensatedOriginalTextFromClick(clientX, clientY, boundaryHint);
+        compensatedTextCache = getLayoutCompensatedOriginalTextFromClick(
+            clientX,
+            clientY,
+            resolvedHit.boundaryElement || boundaryHint,
+            resolvedHit
+        );
         return compensatedTextCache;
     };
 
-    const caret = getCaretInfoFromPoint(clientX, clientY);
-    if (!caret || !(caret.node instanceof Text)) return getCompensatedText();
-    if ((caret.node.nodeValue || '').trim().length === 0) return getCompensatedText();
+    const caretNode = resolvedHit.node;
+    if ((caretNode.nodeValue || '').trim().length === 0) return '';
 
-    const textNodeSnapshot = textNodeSnapshots.get(caret.node);
+    const textNodeSnapshot = textNodeSnapshots.get(caretNode);
     const boundaryElement = textNodeSnapshot?.blockElement
+        || resolvedHit.boundaryElement
         || boundaryHint
-        || getBlockBoundaryElement(caret.node.parentElement);
-    if (!boundaryElement) return getCompensatedText();
+        || getBlockBoundaryElement(caretNode.parentElement);
+    if (!boundaryElement) return '';
 
     const blockSnapshot = blockSnapshots.get(boundaryElement);
     if (!blockSnapshot) {
-        const indexed = getIndexedOriginalTextFromNode(caret.node);
+        const indexed = getIndexedOriginalTextFromNode(caretNode);
         if (indexed) {
             return truncateTooltipText(indexed);
         }
@@ -3531,13 +3684,13 @@ function getOriginalSegmentFromClick(clientX, clientY, boundaryHint = null) {
     const projection = buildBlockDisplayProjection(blockSnapshot);
     if (!projection || projection.displayText.trim().length === 0) return getCompensatedText();
 
-    const targetNodeRange = projection.nodeRanges.find((item) => item.node === caret.node);
+    const targetNodeRange = projection.nodeRanges.find((item) => item.node === caretNode);
     if (!targetNodeRange) return getCompensatedText();
 
-    const nodeTextLength = (caret.node.nodeValue || '').length;
-    const safeCaretOffset = Math.max(0, Math.min(caret.offset, nodeTextLength));
-    if (!isPointOnTextGlyph(caret.node, safeCaretOffset, clientX, clientY)) {
-        return getCompensatedText();
+    const nodeTextLength = (caretNode.nodeValue || '').length;
+    const safeCaretOffset = Math.max(0, Math.min(resolvedHit.offset, nodeTextLength));
+    if (!isPointOnTextGlyph(caretNode, safeCaretOffset, clientX, clientY)) {
+        return '';
     }
 
     const displayOffset = targetNodeRange.start + safeCaretOffset;
@@ -3569,7 +3722,7 @@ function getOriginalSegmentFromClick(clientX, clientY, boundaryHint = null) {
         blockSnapshot.originalText
     );
 
-    const absoluteOffsetInBlock = getTextNodeOffsetInBlock(caret.node, boundaryElement);
+    const absoluteOffsetInBlock = getTextNodeOffsetInBlock(caretNode, boundaryElement);
     const absoluteOriginalIndex = absoluteOffsetInBlock >= 0
         ? findSegmentIndexByOffset(
             blockSnapshot.originalSegments,
@@ -3825,8 +3978,22 @@ function handleDelegatedBodyClick(event) {
         return;
     }
 
+    const targetElement = event.target instanceof Text
+        ? event.target.parentElement
+        : (event.target instanceof Element ? event.target : null);
+    if (targetElement && isElementSuppressedFromTooltip(targetElement)) {
+        hideTooltip();
+        return;
+    }
+
     const boundaryHint = resolveBoundaryFromEventTarget(event.target);
-    const text = getOriginalSegmentFromClick(event.clientX, event.clientY, boundaryHint);
+    const strictHit = getStrictTextHitFromPoint(event.clientX, event.clientY, boundaryHint);
+    if (!strictHit) {
+        hideTooltip();
+        return;
+    }
+
+    const text = getOriginalSegmentFromClick(event.clientX, event.clientY, boundaryHint, strictHit);
     if (text) {
         showTooltip(text, event.clientX, event.clientY);
         return;
