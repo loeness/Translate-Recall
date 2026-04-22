@@ -35,33 +35,66 @@ const INTERACTIVE_ROLES = new Set([
 
 const FEATURE_ENABLED_STORAGE_KEY = 'btvFeatureEnabled';
 const browserUserAgent = navigator.userAgent || '';
-const IS_EDGE_BROWSER = /\bEdg\//.test(browserUserAgent);
+const IS_EDGE_BROWSER = /\bEdg(?:e|A|iOS)?\//.test(browserUserAgent);
 const IS_CHROME_BROWSER = /\bChrome\//.test(browserUserAgent) && !IS_EDGE_BROWSER;
-const BROWSER_PROFILE = IS_EDGE_BROWSER ? 'edge' : 'chrome';
+const BROWSER_PROFILE = IS_EDGE_BROWSER ? 'edge' : (IS_CHROME_BROWSER ? 'chrome' : 'chromium');
+const runtimeCpuCores = Math.max(1, Number(navigator.hardwareConcurrency) || 4);
+const runtimeDeviceMemoryGb = Math.max(1, Number(navigator.deviceMemory) || 8);
+const IS_LOW_POWER_DEVICE = runtimeCpuCores <= 4 || runtimeDeviceMemoryGb <= 4;
+const IS_HIGH_POWER_DEVICE = runtimeCpuCores >= 10 && runtimeDeviceMemoryGb >= 8;
+const PREFER_IDLE_ROOT_FLUSH = !IS_EDGE_BROWSER || IS_LOW_POWER_DEVICE;
 const CLICK_TEXT_HIT_PADDING = 2;
-const NAVIGATION_FORCE_REFRESH_WINDOW_MS = IS_EDGE_BROWSER ? 1300 : 1800;
+const NAVIGATION_FORCE_REFRESH_WINDOW_MS = IS_EDGE_BROWSER
+    ? (IS_LOW_POWER_DEVICE ? 1450 : 1220)
+    : (IS_LOW_POWER_DEVICE ? 1980 : 1660);
 const MIN_SEGMENT_CHARS = 8;
 const MAX_SEGMENT_CHARS = 220;
 const COMMA_SPLIT_TRIGGER_CHARS = 96;
 const LINE_BREAK_SPLIT_TRIGGER_CHARS = 140;
 const LOW_CONFIDENCE_THRESHOLD = 0.45;
 const MAX_FALLBACK_CHARS = 320;
-const PREPROCESS_QUEUE_FLUSH_DELAY_MS = IS_EDGE_BROWSER ? 72 : 110;
-const PREPROCESS_FLUSH_BATCH_SIZE = IS_EDGE_BROWSER ? 30 : 18;
-const PREPROCESS_CHUNK_YIELD_MS = IS_EDGE_BROWSER ? 0 : 8;
-const NAVIGATION_PREPROCESS_DELAY_MS = IS_EDGE_BROWSER ? 95 : 130;
-const PRIORITY_SCAN_DOWNWARD_PX = 2000;
-const PRIORITY_SCAN_UPWARD_PX = 240;
-const LOW_PRIORITY_SCAN_BATCH_SIZE = IS_EDGE_BROWSER ? 34 : 24;
-const LOW_PRIORITY_IDLE_TIMEOUT_MS = IS_EDGE_BROWSER ? 140 : 220;
-const SHADOW_SCAN_STEP_PX = IS_EDGE_BROWSER ? 560 : 780;
-const SHADOW_SCAN_MAX_STEPS_PER_CYCLE = IS_EDGE_BROWSER ? 9 : 13;
-const SHADOW_SCAN_STEP_DELAY_MS = IS_EDGE_BROWSER ? 26 : 34;
+const PREPROCESS_QUEUE_FLUSH_DELAY_MS = IS_EDGE_BROWSER
+    ? (IS_LOW_POWER_DEVICE ? 86 : 64)
+    : (IS_LOW_POWER_DEVICE ? 116 : 88);
+const PREPROCESS_FLUSH_BATCH_SIZE = IS_EDGE_BROWSER
+    ? (IS_LOW_POWER_DEVICE ? 22 : (IS_HIGH_POWER_DEVICE ? 36 : 30))
+    : (IS_LOW_POWER_DEVICE ? 16 : (IS_HIGH_POWER_DEVICE ? 26 : 22));
+const PREPROCESS_CHUNK_YIELD_MS = IS_LOW_POWER_DEVICE ? 10 : (IS_EDGE_BROWSER ? 0 : 5);
+const NAVIGATION_PREPROCESS_DELAY_MS = IS_EDGE_BROWSER
+    ? (IS_LOW_POWER_DEVICE ? 108 : 88)
+    : (IS_LOW_POWER_DEVICE ? 146 : 118);
+const PRIORITY_SCAN_DOWNWARD_PX = IS_LOW_POWER_DEVICE ? 1700 : 2300;
+const PRIORITY_SCAN_UPWARD_PX = IS_LOW_POWER_DEVICE ? 220 : 280;
+const LOW_PRIORITY_SCAN_BATCH_SIZE = IS_EDGE_BROWSER
+    ? (IS_LOW_POWER_DEVICE ? 24 : 38)
+    : (IS_LOW_POWER_DEVICE ? 20 : 28);
+const LOW_PRIORITY_IDLE_TIMEOUT_MS = IS_EDGE_BROWSER
+    ? (IS_LOW_POWER_DEVICE ? 190 : 130)
+    : (IS_LOW_POWER_DEVICE ? 260 : 200);
+const SHADOW_SCAN_STEP_PX = IS_EDGE_BROWSER
+    ? (IS_LOW_POWER_DEVICE ? 430 : 640)
+    : (IS_LOW_POWER_DEVICE ? 620 : 860);
+const SHADOW_SCAN_MAX_STEPS_PER_CYCLE = IS_EDGE_BROWSER
+    ? (IS_LOW_POWER_DEVICE ? 6 : 10)
+    : (IS_LOW_POWER_DEVICE ? 9 : 14);
+const SHADOW_SCAN_STEP_DELAY_MS = IS_EDGE_BROWSER
+    ? (IS_LOW_POWER_DEVICE ? 36 : 20)
+    : (IS_LOW_POWER_DEVICE ? 44 : 28);
 const SHADOW_SCAN_GROWTH_THRESHOLD_PX = 72;
-const TRANSLATION_WAKE_POLL_INTERVAL_MS = IS_EDGE_BROWSER ? 980 : 1180;
-const TRANSLATION_WAKE_IDLE_TIMEOUT_MS = IS_EDGE_BROWSER ? 240 : 360;
-const VIEWPORT_PREWARM_ROOT_MARGIN = '1500px 0px';
-const LAYOUT_CALIBRATION_IDLE_TIMEOUT_MS = IS_EDGE_BROWSER ? 180 : 260;
+const TRANSLATION_WAKE_POLL_INTERVAL_MS = IS_EDGE_BROWSER
+    ? (IS_LOW_POWER_DEVICE ? 1080 : 860)
+    : (IS_LOW_POWER_DEVICE ? 1280 : 1040);
+const TRANSLATION_WAKE_IDLE_TIMEOUT_MS = IS_EDGE_BROWSER
+    ? (IS_LOW_POWER_DEVICE ? 300 : 220)
+    : (IS_LOW_POWER_DEVICE ? 420 : 320);
+const VIEWPORT_PREWARM_ROOT_MARGIN = IS_LOW_POWER_DEVICE ? '1200px 0px' : '1700px 0px';
+const LAYOUT_CALIBRATION_IDLE_TIMEOUT_MS = IS_EDGE_BROWSER
+    ? (IS_LOW_POWER_DEVICE ? 230 : 165)
+    : (IS_LOW_POWER_DEVICE ? 330 : 240);
+const TRANSLATION_DIFF_SAMPLE_LIMIT = IS_LOW_POWER_DEVICE ? 84 : 136;
+const TRANSLATION_DIFF_MIN_COMPARABLE = IS_LOW_POWER_DEVICE ? 8 : 12;
+const TRANSLATION_DIFF_THRESHOLD = IS_LOW_POWER_DEVICE ? 0.58 : 0.46;
+const TRANSLATION_DIFF_CACHE_MS = IS_LOW_POWER_DEVICE ? 2200 : 1400;
 const MIN_LAYOUT_STRETCH_RATIO = 0.35;
 const MAX_LAYOUT_STRETCH_RATIO = 2.8;
 const MAX_LAYOUT_FRAME_DISTANCE_PX = 4200;
@@ -91,6 +124,13 @@ let translationStateEvaluationMode = 'none';
 let translationWakePollHandle = null;
 let translationWakePollMode = 'none';
 let baselineDocumentLang = '';
+let translationDiffProbeCache = {
+    at: 0,
+    url: '',
+    result: false,
+    comparable: 0,
+    ratio: 0
+};
 let deferredFeatureUpdateHandle = null;
 let pendingFeatureEnabledState = null;
 let pendingFeatureForceRefresh = false;
@@ -1957,7 +1997,7 @@ function schedulePendingRootsFlush() {
         return;
     }
 
-    if (!IS_EDGE_BROWSER && typeof window.requestIdleCallback === 'function') {
+    if (PREFER_IDLE_ROOT_FLUSH && typeof window.requestIdleCallback === 'function') {
         flushTimerMode = 'idle';
         flushTimer = window.requestIdleCallback(
             flushPendingRootsInBatches,
@@ -2346,6 +2386,143 @@ function isTranslatedClassName(classValue) {
     return /\btranslated-(ltr|rtl)\b/i.test(classValue || '');
 }
 
+function normalizeTranslationProbeText(text) {
+    return (text || '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9\u00c0-\u024f\u4e00-\u9fff]+/g, '');
+}
+
+function areTextsEquivalentForTranslationProbe(liveText, originalText) {
+    const liveCompact = normalizeTranslationProbeText(liveText);
+    const originalCompact = normalizeTranslationProbeText(originalText);
+
+    if (!liveCompact || !originalCompact) {
+        return true;
+    }
+
+    if (liveCompact === originalCompact) {
+        return true;
+    }
+
+    const minLength = Math.min(liveCompact.length, originalCompact.length);
+    const maxLength = Math.max(liveCompact.length, originalCompact.length);
+    if (minLength >= 10) {
+        const containmentRatio = minLength / Math.max(1, maxLength);
+        if ((liveCompact.includes(originalCompact) || originalCompact.includes(liveCompact)) && containmentRatio >= 0.92) {
+            return true;
+        }
+    }
+
+    if (liveCompact.length >= 24 && originalCompact.length >= 24) {
+        const livePrefix = liveCompact.slice(0, 12);
+        const liveSuffix = liveCompact.slice(-8);
+        const originalPrefix = originalCompact.slice(0, 12);
+        const originalSuffix = originalCompact.slice(-8);
+        if (livePrefix === originalPrefix && liveSuffix === originalSuffix) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function hasTranslateProxyUrl() {
+    const host = (window.location.hostname || '').toLowerCase();
+    const href = window.location.href || '';
+
+    if (/(?:^|\.)translate\.goog$/i.test(host)) {
+        return true;
+    }
+
+    return /[?&]_x_tr_sl=|[?&]_x_tr_tl=|[?&]_x_tr_hl=/i.test(href);
+}
+
+function probeTranslatedContentDrift() {
+    const now = Date.now();
+    const currentUrl = window.location.href || '';
+
+    if (
+        translationDiffProbeCache.url === currentUrl
+        && (now - translationDiffProbeCache.at) <= TRANSLATION_DIFF_CACHE_MS
+    ) {
+        return translationDiffProbeCache.result;
+    }
+
+    if (!document.body || totalOriginalContentIndex.size === 0) {
+        translationDiffProbeCache = {
+            at: now,
+            url: currentUrl,
+            result: false,
+            comparable: 0,
+            ratio: 0
+        };
+        return false;
+    }
+
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let current = walker.nextNode();
+    let sampled = 0;
+    let comparable = 0;
+    let changed = 0;
+
+    while (current && sampled < TRANSLATION_DIFF_SAMPLE_LIMIT) {
+        if (shouldSkipTextNode(current)) {
+            current = walker.nextNode();
+            continue;
+        }
+
+        const liveText = normalizeWhitespaceForTooltip(current.nodeValue || '');
+        if (liveText.length < 6) {
+            current = walker.nextNode();
+            continue;
+        }
+
+        sampled += 1;
+
+        const originalText = getIndexedOriginalTextFromNode(current);
+        if (!originalText || normalizeWhitespaceForTooltip(originalText).length < 6) {
+            current = walker.nextNode();
+            continue;
+        }
+
+        comparable += 1;
+        if (!areTextsEquivalentForTranslationProbe(liveText, originalText)) {
+            changed += 1;
+        }
+
+        if (comparable >= TRANSLATION_DIFF_MIN_COMPARABLE) {
+            const ratio = changed / comparable;
+            if (ratio >= (TRANSLATION_DIFF_THRESHOLD + 0.18) && changed >= 6) {
+                translationDiffProbeCache = {
+                    at: now,
+                    url: currentUrl,
+                    result: true,
+                    comparable,
+                    ratio
+                };
+                return true;
+            }
+        }
+
+        current = walker.nextNode();
+    }
+
+    const ratio = comparable > 0 ? (changed / comparable) : 0;
+    const result = comparable >= TRANSLATION_DIFF_MIN_COMPARABLE && ratio >= TRANSLATION_DIFF_THRESHOLD;
+
+    translationDiffProbeCache = {
+        at: now,
+        url: currentUrl,
+        result,
+        comparable,
+        ratio
+    };
+
+    return result;
+}
+
 function detectTranslationRenderState() {
     const html = document.documentElement;
     const body = document.body;
@@ -2359,7 +2536,12 @@ function detectTranslationRenderState() {
         document.querySelector('font[style*="vertical-align: inherit"], span[style*="vertical-align: inherit"]')
     );
     const hasLangShift = Boolean(baselineDocumentLang && htmlLang && htmlLang !== baselineDocumentLang);
-    const translated = hasTranslatedClass || hasTranslateWrapper || hasLangShift;
+    const hasTranslateUiMarker = Boolean(
+        document.querySelector('iframe.goog-te-banner-frame, iframe.goog-te-menu-frame, .goog-te-banner-frame, .goog-te-menu-frame, .skiptranslate')
+    );
+    const hasProxyUrl = hasTranslateProxyUrl();
+    const hasContentDrift = probeTranslatedContentDrift();
+    const translated = hasTranslatedClass || hasTranslateWrapper || hasLangShift || hasTranslateUiMarker || hasProxyUrl || hasContentDrift;
 
     return {
         mode: translated ? 'translated' : 'original',
@@ -2368,7 +2550,10 @@ function detectTranslationRenderState() {
             htmlLang,
             htmlClass,
             bodyClass,
-            htmlTranslate
+            htmlTranslate,
+            hasTranslateUiMarker ? 'ui1' : 'ui0',
+            hasProxyUrl ? 'proxy1' : 'proxy0',
+            hasContentDrift ? 'drift1' : 'drift0'
         ].join('|')
     };
 }
