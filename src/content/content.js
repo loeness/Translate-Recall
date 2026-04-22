@@ -23,9 +23,7 @@ if (loaderState.loading) {
 const userAgent = navigator.userAgent || '';
 const isEdgeBrowser = /\bEdg\//.test(userAgent);
 const targetProfile = isEdgeBrowser ? 'edge' : 'chrome';
-const targetFile = isEdgeBrowser
-    ? 'src/content/content.edge.js'
-    : 'src/content/content.chrome.js';
+const targetFile = 'src/content/content.edge.js';
 
 loaderState.loading = true;
 loaderState.loadedProfile = targetProfile;

@@ -88,9 +88,7 @@ async function waitForContentScript(tabId, attempts, intervalMs) {
 }
 
 function getBrowserContentScriptFile() {
-  return IS_EDGE_BROWSER
-    ? 'src/content/content.edge.js'
-    : 'src/content/content.chrome.js';
+  return 'src/content/content.edge.js';
 }
 
 async function ensureContentScriptReady(tab) {

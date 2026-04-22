@@ -42,8 +42,7 @@ Translate Recall/
 │   │   └── popup.js
 │   ├── content/
 │       ├── content.js
-│       ├── content.edge.js
-│       └── content.chrome.js
+│       └── content.edge.js
 ├──.gitignore
 ├── README.md
 └── LICENSE

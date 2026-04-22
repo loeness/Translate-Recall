@@ -42,7 +42,7 @@
     "message": "Preprocessing current page..."
   },
   "popupStatusPreprocessDone": {
-    "message": "Preprocess complete. You can now translate the page."
+    "message": "Preprocess started. You can translate now while background indexing continues."
   },
   "popupStatusPreprocessFailedPrefix": {
     "message": "Preprocess failed: "

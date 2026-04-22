@@ -34,9 +34,10 @@ const INTERACTIVE_ROLES = new Set([
 ]);
 
 const FEATURE_ENABLED_STORAGE_KEY = 'btvFeatureEnabled';
-const IS_EDGE_BROWSER = true;
-const IS_CHROME_BROWSER = false;
-const BROWSER_PROFILE = 'edge';
+const browserUserAgent = navigator.userAgent || '';
+const IS_EDGE_BROWSER = /\bEdg\//.test(browserUserAgent);
+const IS_CHROME_BROWSER = /\bChrome\//.test(browserUserAgent) && !IS_EDGE_BROWSER;
+const BROWSER_PROFILE = IS_EDGE_BROWSER ? 'edge' : 'chrome';
 const CLICK_TEXT_HIT_PADDING = 2;
 const NAVIGATION_FORCE_REFRESH_WINDOW_MS = IS_EDGE_BROWSER ? 1300 : 1800;
 const MIN_SEGMENT_CHARS = 8;
@@ -90,6 +91,12 @@ let translationStateEvaluationMode = 'none';
 let translationWakePollHandle = null;
 let translationWakePollMode = 'none';
 let baselineDocumentLang = '';
+let deferredFeatureUpdateHandle = null;
+let pendingFeatureEnabledState = null;
+let pendingFeatureForceRefresh = false;
+let deferredManualPreprocessHandle = null;
+let pendingManualPreprocessForce = false;
+let pendingManualPreprocessAnchorY = 0;
 
 let textNodeSnapshots = new WeakMap();
 let blockSnapshots = new WeakMap();
@@ -2613,6 +2620,72 @@ function scheduleTranslationWakePoll(delay = TRANSLATION_WAKE_POLL_INTERVAL_MS) 
     translationWakePollHandle = window.setTimeout(runTranslationWakePoll, delay);
 }
 
+function clearDeferredFeatureStateUpdate() {
+    if (deferredFeatureUpdateHandle !== null) {
+        window.clearTimeout(deferredFeatureUpdateHandle);
+        deferredFeatureUpdateHandle = null;
+    }
+
+    pendingFeatureEnabledState = null;
+    pendingFeatureForceRefresh = false;
+}
+
+function scheduleFeatureStateUpdate(enabled, options = {}) {
+    pendingFeatureEnabledState = Boolean(enabled);
+    pendingFeatureForceRefresh = pendingFeatureForceRefresh || options.forceRefresh === true;
+
+    if (deferredFeatureUpdateHandle !== null) {
+        return;
+    }
+
+    deferredFeatureUpdateHandle = window.setTimeout(() => {
+        deferredFeatureUpdateHandle = null;
+
+        const nextEnabled = pendingFeatureEnabledState;
+        const forceRefresh = pendingFeatureForceRefresh;
+
+        pendingFeatureEnabledState = null;
+        pendingFeatureForceRefresh = false;
+
+        setFeatureEnabled(nextEnabled, { forceRefresh });
+    }, 0);
+}
+
+function clearDeferredManualPreprocess() {
+    if (deferredManualPreprocessHandle !== null) {
+        window.clearTimeout(deferredManualPreprocessHandle);
+        deferredManualPreprocessHandle = null;
+    }
+
+    pendingManualPreprocessForce = false;
+    pendingManualPreprocessAnchorY = 0;
+}
+
+function scheduleManualPreprocess(force = false, options = {}) {
+    pendingManualPreprocessForce = pendingManualPreprocessForce || force;
+    pendingManualPreprocessAnchorY = Number.isFinite(options.anchorY)
+        ? options.anchorY
+        : window.scrollY;
+
+    if (deferredManualPreprocessHandle !== null) {
+        return;
+    }
+
+    deferredManualPreprocessHandle = window.setTimeout(() => {
+        deferredManualPreprocessHandle = null;
+
+        const runForce = pendingManualPreprocessForce;
+        const anchorY = pendingManualPreprocessAnchorY;
+
+        pendingManualPreprocessForce = false;
+
+        runFullPreprocess(runForce, { anchorY });
+        shadowScanCursorY = 0;
+        observedScrollHeight = getDocumentScrollHeight();
+        scheduleShadowScan(true);
+    }, 0);
+}
+
 function scheduleForcedFullPreprocess(delay = NAVIGATION_PREPROCESS_DELAY_MS) {
     allowSnapshotForceRefreshUntil = Date.now() + NAVIGATION_FORCE_REFRESH_WINDOW_MS;
 
@@ -3873,6 +3946,8 @@ function stopHeavyProcessing() {
     teardownLifecycleObserver();
     teardownNavigationObservers();
     unbindDelegatedInteractionListeners();
+    clearDeferredFeatureStateUpdate();
+    clearDeferredManualPreprocess();
 
     if (navigationPreprocessTimer !== null) {
         window.clearTimeout(navigationPreprocessTimer);
@@ -3932,16 +4007,19 @@ function setFeatureEnabled(enabled, options = {}) {
 
 function synchronizeFeatureState() {
     if (!chrome.storage || !chrome.storage.local) {
+        clearDeferredFeatureStateUpdate();
         setFeatureEnabled(false);
         return;
     }
 
     chrome.storage.local.get(FEATURE_ENABLED_STORAGE_KEY, (result) => {
         if (chrome.runtime.lastError) {
+            clearDeferredFeatureStateUpdate();
             setFeatureEnabled(false);
             return;
         }
-        setFeatureEnabled(result[FEATURE_ENABLED_STORAGE_KEY] === true, { forceRefresh: true });
+
+        scheduleFeatureStateUpdate(result[FEATURE_ENABLED_STORAGE_KEY] === true);
     });
 
     if (chrome.storage.onChanged) {
@@ -3950,7 +4028,7 @@ function synchronizeFeatureState() {
                 return;
             }
 
-            setFeatureEnabled(changes[FEATURE_ENABLED_STORAGE_KEY].newValue === true, { forceRefresh: true });
+            scheduleFeatureStateUpdate(changes[FEATURE_ENABLED_STORAGE_KEY].newValue === true);
         });
     }
 }
@@ -4076,18 +4154,30 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     }
 
     if (message.type === 'BTV_PREPROCESS_NOW') {
-        runFullPreprocess(true, { anchorY: window.scrollY });
-        shadowScanCursorY = 0;
-        observedScrollHeight = getDocumentScrollHeight();
-        scheduleShadowScan(true);
-        sendResponse({ ok: true, time: Date.now() });
+        const force = message.force === true;
+        const anchorY = Number.isFinite(message.anchorY) ? message.anchorY : window.scrollY;
+        scheduleManualPreprocess(force, { anchorY });
+        sendResponse({ ok: true, queued: true, force, time: Date.now() });
         return;
     }
 
     if (message.type === 'BTV_SET_ENABLED') {
         const enabled = Boolean(message.enabled);
-        setFeatureEnabled(enabled, { forceRefresh: enabled });
-        sendResponse({ ok: true, enabled: featureEnabled });
+
+        if (!enabled) {
+            clearDeferredFeatureStateUpdate();
+            clearDeferredManualPreprocess();
+            setFeatureEnabled(false);
+            sendResponse({ ok: true, enabled: false, queued: false });
+            return;
+        }
+
+        scheduleFeatureStateUpdate(true, {
+            forceRefresh: message.forceRefresh === true
+        });
+
+        sendResponse({ ok: true, enabled: true, queued: true });
+        return;
     }
 });
 

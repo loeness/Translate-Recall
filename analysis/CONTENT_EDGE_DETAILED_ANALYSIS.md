@@ -51,9 +51,9 @@
 ### 1. 双重加载机制（重要！）
 
 ```javascript
-// content.js 充当路由器，根据浏览器类型动态加载专用模块
+// content.js 统一加载合并后的核心模块
 const isEdgeBrowser = /\bEdg\//.test(userAgent);
-const targetFile = isEdgeBrowser ? 'src/content/content.edge.js' : 'src/content/content.chrome.js';
+const targetFile = 'src/content/content.edge.js';
 import(chrome.runtime.getURL(targetFile))
 ```
 

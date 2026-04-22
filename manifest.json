@@ -25,8 +25,7 @@
   "web_accessible_resources": [
     {
       "resources": [
-        "src/content/content.edge.js",
-        "src/content/content.chrome.js"
+        "src/content/content.edge.js"
       ],
       "matches": ["http://*/*", "https://*/*"]
     }

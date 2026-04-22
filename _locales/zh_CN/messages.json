@@ -42,7 +42,7 @@
     "message": "正在预处理当前页面..."
   },
   "popupStatusPreprocessDone": {
-    "message": "预处理完成，现在可以开始翻译页面。"
+    "message": "预处理已启动，现在可以开始翻译页面（后台会继续补全）。"
   },
   "popupStatusPreprocessFailedPrefix": {
     "message": "预处理失败："
